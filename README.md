@@ -99,6 +99,10 @@ CHAT_DOMAIN=chat.example.com MODEL_API_KEY=your_key docker compose up -d --build
 
 Health and readiness probes are exposed at `/healthz` and `/readyz`.
 
+## Azure VM deployment
+
+See [AZURE_DEPLOY.md](AZURE_DEPLOY.md) for the portal setup, PowerShell upload commands, VM service setup script, private Chunky key configuration, architecture diagram, and two-user verification.
+
 ## AWS Lightsail deployment
 
 The included script uploads the Python server and built React assets to a private, encrypted S3 bucket, creates an Ubuntu 24.04 Lightsail instance in `us-east-1a`, installs the TCP server and browser gateway as a `systemd` service, and opens TCP ports 8765 and 8080. Run `npm run build` first. It requires AWS credentials with S3 bucket/object permissions plus Lightsail create and firewall permissions. Set `CHAT_DEPLOY_BUCKET` to use an existing private bucket; otherwise the script creates one. The instance downloads the bundle through a one-hour presigned URL and checks its SHA-256 digest. Instance and S3 charges apply while those resources exist.

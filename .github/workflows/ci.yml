@@ -35,3 +35,4 @@ jobs:
 
       - name: Run Python unit and integration test suite
         run: python -m unittest -v test_store test_history test_auth test_rich_chat test_smarter_ai test_chat test_web_app
+

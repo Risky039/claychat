@@ -53,3 +53,4 @@ def detect_mime(data, filename=""):
             pass
 
     raise ValueError("Unsupported file type (allowed: PNG, JPEG, GIF, WEBP, PDF, or UTF-8 text)")
+
