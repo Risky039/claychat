@@ -27,10 +27,10 @@ COPY --chown=appuser:appuser chat_server.py chat_client.py web_app.py ./
 COPY --from=frontend-build --chown=appuser:appuser /build/frontend/dist ./frontend/dist
 
 USER appuser
-VOLUME ["/data"]
 EXPOSE 8080 8765
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=3)"
 
 CMD ["python", "web_app.py", "--tcp-host", "127.0.0.1", "--tcp-port", "8765", "--web-host", "0.0.0.0", "--web-port", "8080"]
+

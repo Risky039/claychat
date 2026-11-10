@@ -5,6 +5,7 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -342,7 +343,7 @@ async def main():
     parser.add_argument("--tcp-host", default="127.0.0.1")
     parser.add_argument("--tcp-port", type=int, default=8765)
     parser.add_argument("--web-host", default="127.0.0.1")
-    parser.add_argument("--web-port", type=int, default=8080)
+    parser.add_argument("--web-port", type=int, default=int(os.getenv("PORT", "8080")))
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
