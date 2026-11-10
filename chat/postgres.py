@@ -1,7 +1,11 @@
 """PostgreSQL connection and migrations for the chat store."""
 
+from pathlib import Path
+
 import psycopg
 from psycopg.conninfo import conninfo_to_dict
+
+SUPABASE_ROOT_CA = Path(__file__).with_name("supabase-prod-ca-2021.crt")
 
 
 class ChatConnection(psycopg.Connection):
@@ -12,9 +16,15 @@ class ChatConnection(psycopg.Connection):
 def connect(database_url, migrations):
     options = conninfo_to_dict(database_url)
     options.setdefault("connect_timeout", "5")
-    if "sslmode" not in options:
-        options.setdefault("sslrootcert", "system")
-        options["sslmode"] = "verify-full"
+    default_ssl = "sslmode" not in options
+    sslmode = options.setdefault("sslmode", "verify-full")
+    if sslmode == "verify-full" and "sslrootcert" not in options:
+        host = options.get("host", "").lower()
+        # Supabase's shared pooler uses a private certificate authority.
+        if "," not in host and host.endswith(".pooler.supabase.com"):
+            options["sslrootcert"] = str(SUPABASE_ROOT_CA)
+        elif default_ssl:
+            options["sslrootcert"] = "system"
     conn = ChatConnection.connect(**options, autocommit=True, prepare_threshold=None)
     try:
         with conn.transaction():
