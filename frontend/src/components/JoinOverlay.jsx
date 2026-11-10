@@ -46,7 +46,7 @@ export default function JoinOverlay({ state, onJoin, onAuthenticate }) {
               : "Reserve your nickname with a password so nobody else can claim it."}
         </p>
         <label htmlFor="nicknameInput">{mode === "guest" ? "Your nickname" : "Username"}</label>
-        <input id="nicknameInput" value={nickname} onChange={(event) => setNickname(event.target.value)} autoComplete="username" spellCheck={false} minLength={2} maxLength={20} pattern="[A-Za-z][A-Za-z0-9_]{1,19}" placeholder="e.g. alex" required />
+        <input id="nicknameInput" value={nickname} onChange={(event) => setNickname(event.target.value)} autoComplete="username" autoCapitalize="none" spellCheck={false} minLength={2} maxLength={20} pattern="[A-Za-z][A-Za-z0-9_]{1,19}" placeholder="e.g. alex" required />
         {mode !== "guest" ? (
           <>
             <label htmlFor="passwordInput">Password</label>
