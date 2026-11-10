@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Avatar, Icon } from "./Icons.jsx";
 
-export default function Sidebar({ state, open, onClose, onJoinRoom, onSelectDm, onSignOut }) {
+export default function Sidebar({ state, open, inert, onClose, onJoinRoom, onSelectDm, onSignOut }) {
   const [roomFormOpen, setRoomFormOpen] = useState(false);
   const [roomName, setRoomName] = useState("");
 
@@ -16,11 +16,11 @@ export default function Sidebar({ state, open, onClose, onJoinRoom, onSelectDm, 
   }
 
   return (
-    <aside className={`sidebar clay-card${open ? " open" : ""}`} aria-label="Chat navigation">
+    <aside id="navigation-panel" className={`sidebar clay-card${open ? " open" : ""}`} aria-label="Chat navigation" inert={inert}>
       <div className="brand-row">
         <div className="brand-mark" aria-hidden="true"><Icon name="chat" /></div>
         <div><strong className="brand-name">claychat<span>.</span></strong><small>Where conversations feel good</small></div>
-        <button className="icon-button sidebar-close" type="button" onClick={onClose} aria-label="Close navigation"><Icon name="close" /></button>
+        <button className="icon-button sidebar-close" type="button" onClick={onClose} aria-label="Close navigation" data-panel-close><Icon name="close" /></button>
       </div>
 
       <div className="workspace-label">YOUR SPACE <span className="tiny-star">✦</span></div>
@@ -39,7 +39,7 @@ export default function Sidebar({ state, open, onClose, onJoinRoom, onSelectDm, 
             </button>
           ))}
         </div>
-        {roomFormOpen ? <form className="room-form" onSubmit={submitRoom}><label className="sr-only" htmlFor="roomName">Room name</label><input id="roomName" value={roomName} onChange={(event) => setRoomName(event.target.value)} maxLength={30} placeholder="Room name" pattern="[A-Za-z][A-Za-z0-9_-]{0,29}" required autoFocus /><button type="submit" aria-label="Join room" disabled={state.status !== "connected"}><Icon name="arrow" /></button></form> : null}
+        {roomFormOpen ? <form className="room-form" onSubmit={submitRoom}><label className="sr-only" htmlFor="roomName">Room name</label><input id="roomName" value={roomName} onChange={(event) => setRoomName(event.target.value)} maxLength={30} placeholder="Room name" pattern="[A-Za-z][A-Za-z0-9_\-]{0,29}" autoCapitalize="none" spellCheck={false} required autoFocus /><button type="submit" aria-label="Join room" disabled={state.status !== "connected"}><Icon name="arrow" /></button></form> : null}
       </section>
 
       <section className="nav-section people-section" aria-labelledby="peopleHeading">
