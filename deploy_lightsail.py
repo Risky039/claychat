@@ -24,6 +24,8 @@ def bundle_bytes():
     with tarfile.open(fileobj=bundle, mode="w:gz") as archive:
         for relative in ("chat_server.py", "web_app.py"):
             archive.add(root / relative, arcname=relative)
+        for path in sorted((root / "chat").rglob("*.py")):
+            archive.add(path, arcname=path.relative_to(root).as_posix())
         dist = root / "frontend" / "dist"
         if not (dist / "index.html").is_file():
             raise FileNotFoundError("Build the React frontend first: cd frontend; npm install; npm run build")

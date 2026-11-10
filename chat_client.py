@@ -10,11 +10,18 @@ def receive(sock):
     try:
         with sock.makefile("r", encoding="utf-8") as stream:
             for line in stream:
-                item = json.loads(line)
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    continue
                 kind = item.get("type")
                 if kind in ("message", "dm", "ai"):
                     label = f"[{item.get('room', 'DM')}]" if kind == "message" else f"[{kind.upper()}]"
                     print(f"\n{label} {item.get('username')}: {item.get('text')}", flush=True)
+                elif kind == "history":
+                    room = item.get("room", "room")
+                    for entry in item.get("messages", ()):
+                        print(f"\n[{room}] {entry.get('username')}: {entry.get('text')}", flush=True)
                 elif kind == "presence":
                     print(f"\n* {item['username']} {item['action']}", flush=True)
                 elif kind == "ai_status":

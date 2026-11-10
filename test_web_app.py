@@ -7,6 +7,7 @@ import unittest
 from aiohttp import ClientSession, web
 
 from chat_server import ChatServer, MAX_LINE
+from deploy_lightsail import bundle_bytes
 from web_app import create_web_app
 
 
@@ -70,6 +71,17 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
     async def test_rejects_cross_origin_websocket(self):
         async with self.session.get(self.base + "/ws", headers={"Origin": "https://wrong.example"}) as response:
             self.assertEqual(response.status, 403)
+
+    def test_deployment_bundle_includes_chat_package_and_excludes_secrets(self):
+        import io
+        import tarfile
+
+        with tarfile.open(fileobj=io.BytesIO(bundle_bytes()), mode="r:gz") as archive:
+            names = set(archive.getnames())
+        self.assertIn("chat/server.py", names)
+        self.assertIn("chat/store.py", names)
+        self.assertIn("chat/handlers/rooms.py", names)
+        self.assertTrue(all("deployment-private" not in name and "meta_model" not in name for name in names))
 
 
 if __name__ == "__main__":

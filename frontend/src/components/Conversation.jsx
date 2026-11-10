@@ -1,18 +1,36 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Avatar, Icon, shortTime } from "./Icons.jsx";
+import { dayLabel } from "../messages.js";
 
 const EMPTY_ENTRIES = [];
 
-export default function Conversation({ state, onSend, onOpenNav, onOpenAi, onOpenTransport }) {
+function entryKey(entry) {
+  return entry ? `${entry.id ?? ""}|${entry.kind}|${entry.time ?? ""}|${entry.text}` : "";
+}
+
+export default function Conversation({ state, onSend, onLoadOlder, onOpenNav, onOpenAi, onOpenTransport }) {
   const [draft, setDraft] = useState("");
   const feedRef = useRef(null);
   const inputRef = useRef(null);
+  const scrollMemo = useRef({ channel: "", first: "", last: "", height: 0 });
   const room = state.active.type === "room";
+  const channel = `${state.active.type}:${state.active.id.toLowerCase()}`;
   const entries = room ? state.roomMessages[state.active.id] || EMPTY_ENTRIES : state.dmMessages[state.active.id.toLowerCase()] || EMPTY_ENTRIES;
+  const hasMore = room && state.roomHasMore[state.active.id];
+  const loadingOlder = room && state.roomLoadingOlder[state.active.id];
 
-  useEffect(() => {
-    if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
-  }, [entries]);
+  // New message at the bottom or switched channel: go to the bottom.
+  // Older messages added on top: keep the reader's place.
+  useLayoutEffect(() => {
+    const feed = feedRef.current;
+    if (!feed) return;
+    const first = entryKey(entries[0]);
+    const last = entryKey(entries[entries.length - 1]);
+    const memo = scrollMemo.current;
+    if (channel !== memo.channel || last !== memo.last) feed.scrollTop = feed.scrollHeight;
+    else if (first !== memo.first) feed.scrollTop += feed.scrollHeight - memo.height;
+    scrollMemo.current = { channel, first, last, height: feed.scrollHeight };
+  }, [channel, entries]);
 
   function submit(event) {
     event.preventDefault();
@@ -38,13 +56,15 @@ export default function Conversation({ state, onSend, onOpenNav, onOpenAi, onOpe
       </header>
 
       <div className="chat-feed" ref={feedRef} role="log" aria-live="polite" aria-relevant="additions">
-        {entries.length ? <><div className="chat-day"><span>TODAY</span></div>{entries.map((entry, index) => {
-          if (entry.kind === "system") return <div className="system-note" key={`system-${index}`}>{entry.text}</div>;
+        {entries.length ? <>{hasMore ? <div className="load-older"><button type="button" onClick={() => onLoadOlder(state.active.id)} disabled={loadingOlder || state.status !== "connected"}>{loadingOlder ? "Loading..." : "Load earlier messages"}</button></div> : null}{entries.map((entry, index) => {
+          const day = dayLabel(entry.time);
+          const divider = day && day !== dayLabel(entries[index - 1]?.time) ? <div className="chat-day" key={`day-${index}`}><span>{day}</span></div> : null;
+          if (entry.kind === "system") return [divider, <div className="system-note" key={`system-${index}`}>{entry.text}</div>];
           const mine = entry.username.toLowerCase() === state.username.toLowerCase();
-          return <div className={`message-row${mine ? " self" : ""}`} key={`message-${index}`}>
+          return [divider, <div className={`message-row${mine ? " self" : ""}`} key={entry.id != null ? `message-${entry.id}` : `message-${index}`}>
             <Avatar name={entry.username} className="avatar message-avatar" />
             <div className="message-body"><div className="message-meta"><strong>{mine ? "You" : entry.username}</strong><time>{shortTime(entry.time)}</time></div><div className="bubble">{entry.text}</div></div>
-          </div>;
+          </div>];
         })}</> : <div className="empty-chat"><div className="empty-art"><Icon name="chat" /></div><h2>{room ? `Welcome to #${state.active.id}.` : `Say hello to ${state.active.id}.`}</h2><p>{room ? "Start the conversation with a message below." : "This direct message is only visible to the two of you."}</p></div>}
       </div>
 

@@ -3,12 +3,16 @@
 import argparse
 import asyncio
 import json
+import logging
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from aiohttp import WSMsgType, web
 
-from chat_server import ChatServer, MAX_LINE
+from chat.config import Settings
+from chat.protocol import MAX_LINE
+from chat.server import ChatServer
+from chat.store import Store
 
 
 DIST_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
@@ -117,8 +121,10 @@ async def main():
     parser.add_argument("--web-host", default="127.0.0.1")
     parser.add_argument("--web-port", type=int, default=8080)
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    chat = ChatServer()
+    settings = Settings.from_env()
+    chat = ChatServer(store=Store(settings.db_path), settings=settings)
     tcp = await asyncio.start_server(chat.handle, args.tcp_host, args.tcp_port, limit=MAX_LINE)
     gateway_host = "127.0.0.1" if args.tcp_host in {"0.0.0.0", "::"} else args.tcp_host
     runner = web.AppRunner(create_web_app(gateway_host, args.tcp_port))
@@ -128,11 +134,13 @@ async def main():
         await site.start()
         print(f"TCP chat: {args.tcp_host}:{args.tcp_port}", flush=True)
         print(f"Web interface: http://{args.web_host}:{args.web_port}", flush=True)
+        print(f"Message history: {settings.db_path}", flush=True)
         await asyncio.Event().wait()
     finally:
         await runner.cleanup()
         tcp.close()
         await tcp.wait_closed()
+        await chat.close()
 
 
 if __name__ == "__main__":

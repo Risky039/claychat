@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
+import { mergeMessages } from "./messages.js";
 
 const initialState = {
   username: "",
@@ -13,18 +14,26 @@ const initialState = {
   dmMessages: {},
   roomUnread: {},
   dmUnread: {},
+  roomHasMore: {},
+  roomLoadingOlder: {},
   users: [],
   aiMessages: [],
   aiPending: false,
   events: [],
 };
 
+const MAX_ENTRIES = 1000;
+
 function appendTo(map, key, entry) {
-  return { ...map, [key]: [...(map[key] || []), entry].slice(-200) };
+  return { ...map, [key]: [...(map[key] || []), entry].slice(-MAX_ENTRIES) };
+}
+
+function hasMessage(entries, id) {
+  return id != null && entries.some((entry) => entry.id === id);
 }
 
 function addSystem(state, text, room = state.currentRoom) {
-  return { ...state, roomMessages: appendTo(state.roomMessages, room, { kind: "system", text }) };
+  return { ...state, roomMessages: appendTo(state.roomMessages, room, { kind: "system", text, time: new Date().toISOString() }) };
 }
 
 function reducer(state, action) {
@@ -39,6 +48,7 @@ function reducer(state, action) {
         status: state.joined ? "reconnecting" : "offline",
         registered: false,
         users: [],
+        roomLoadingOlder: {},
         joinError: state.joinError || (state.joined ? "" : "Could not reach the chat server. Try again."),
       };
     case "JOIN_REJECTED":
@@ -59,6 +69,8 @@ function reducer(state, action) {
     }
     case "AI_PROMPT":
       return { ...state, aiPending: true, aiMessages: [...state.aiMessages, { role: "user", content: action.text, time: new Date().toISOString() }] };
+    case "HISTORY_REQUEST":
+      return { ...state, roomLoadingOlder: { ...state.roomLoadingOlder, [action.room]: true } };
     case "RECEIVE": {
       const item = action.item;
       let next = { ...state, events: [...state.events, { direction: "in", item, time: new Date().toISOString() }].slice(-80) };
@@ -91,11 +103,21 @@ function reducer(state, action) {
           return addSystem(next, `You joined #${item.room}.`, item.room);
         }
         case "message": {
+          if (hasMessage(next.roomMessages[item.room] || [], item.id)) return next;
           next.roomMessages = appendTo(next.roomMessages, item.room, { kind: "message", ...item });
           if (state.active.type !== "room" || state.active.id !== item.room) {
             next.roomUnread = { ...state.roomUnread, [item.room]: (state.roomUnread[item.room] || 0) + 1 };
           }
           return next;
+        }
+        case "history": {
+          const incoming = (item.messages || []).map((message) => ({ kind: "message", ...message }));
+          return {
+            ...next,
+            roomMessages: { ...next.roomMessages, [item.room]: mergeMessages(next.roomMessages[item.room] || [], incoming) },
+            roomHasMore: { ...next.roomHasMore, [item.room]: Boolean(item.has_more) },
+            roomLoadingOlder: { ...next.roomLoadingOlder, [item.room]: false },
+          };
         }
         case "dm": {
           const other = item.username.toLowerCase() === state.username.toLowerCase() ? item.to : item.username;
@@ -218,6 +240,13 @@ export function useChat() {
 
   const selectDm = useCallback((name) => dispatch({ type: "SELECT_DM", name }), []);
 
+  const loadOlder = useCallback((room) => {
+    const current = stateRef.current;
+    const oldest = (current.roomMessages[room] || []).find((entry) => entry.id != null);
+    if (!oldest || current.roomLoadingOlder[room] || !current.roomHasMore[room]) return;
+    if (send({ type: "history", room, before: oldest.id })) dispatch({ type: "HISTORY_REQUEST", room });
+  }, [send]);
+
   const sendMessage = useCallback((text) => {
     const active = stateRef.current.active;
     return active.type === "room" ? send({ type: "message", text }) : send({ type: "dm", to: active.id, text });
@@ -235,6 +264,7 @@ export function useChat() {
     join,
     joinRoom,
     selectDm,
+    loadOlder,
     sendMessage,
     sendAi,
     showAiHistory: () => send({ type: "ai_history" }),

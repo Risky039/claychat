@@ -102,7 +102,7 @@ class ChatTest(unittest.IsolatedAsyncioTestCase):
         await alice.send(type="ai", text="Explain TCP")
         self.assertIn("not configured", (await alice.expect("error"))["text"])
         self.chat.api_key = "test-only-key"
-        with patch("chat_server.ask_meta", return_value="TCP delivers ordered bytes") as mocked:
+        with patch("chat.ai.ask_meta", return_value="TCP delivers ordered bytes") as mocked:
             await alice.send(type="ai", text="Explain TCP")
             reply = await alice.expect("ai")
             self.assertEqual(reply["text"], "TCP delivers ordered bytes")
@@ -124,7 +124,7 @@ class ChatTest(unittest.IsolatedAsyncioTestCase):
             calls.append(messages)
             return f"answer {len(calls)}"
 
-        with patch("chat_server.ask_meta", side_effect=fake_meta):
+        with patch("chat.ai.ask_meta", side_effect=fake_meta):
             await alice.send(type="ai", text="My name is Alice")
             self.assertEqual((await alice.expect("ai"))["text"], "answer 1")
             self.chat.peers["alice"].last_ai = 0
@@ -153,7 +153,7 @@ class ChatTest(unittest.IsolatedAsyncioTestCase):
     async def test_failed_ai_reply_does_not_enter_history(self):
         self.chat.api_key = "test-only-key"
         alice = await self.connect("alice")
-        with patch("chat_server.ask_meta", side_effect=ValueError("empty")):
+        with patch("chat.ai.ask_meta", side_effect=ValueError("empty")):
             await alice.send(type="ai", text="Try")
             error = await alice.expect("error")
             self.assertEqual(error["source"], "ai")
@@ -173,7 +173,7 @@ class ChatTest(unittest.IsolatedAsyncioTestCase):
             return "stale answer"
 
         try:
-            with patch("chat_server.ask_meta", side_effect=delayed_meta):
+            with patch("chat.ai.ask_meta", side_effect=delayed_meta):
                 await alice.send(type="ai", text="Remember this")
                 await alice.expect("ai_status")
                 self.assertTrue(await asyncio.to_thread(started.wait, 1))
