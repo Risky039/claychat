@@ -97,6 +97,8 @@ ClayChat can store accounts, sessions, chat history, reactions, and read receipt
 2. In the Render service's **Environment** settings, set `CHAT_DATABASE_URL` to that URI. Store the value there as a secret and deploy the new build. The application does not use Supabase publishable or secret API keys.
 3. Confirm that `/readyz` returns HTTP 200. The startup log identifies the storage backend without printing the connection URI.
 
+If a password is hard to embed in a URI, set `CHAT_DATABASE_PASSWORD` in Render to the raw database password. This value overrides the password from `CHAT_DATABASE_URL`. Keep both settings on the server.
+
 An unset `CHAT_DATABASE_URL` keeps the SQLite setup for local use. A configured Postgres connection failure stops startup. Switching backends does not import old SQLite records. Uploaded file contents still use `CHAT_UPLOAD_DIR`, so they need their own durable storage if they must survive Render redeploys.
 
 ## Docker & Caddy HTTPS deployment
