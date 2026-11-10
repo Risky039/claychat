@@ -120,6 +120,24 @@ class StoreError(RuntimeError):
     """A database error safe to log without including connection details."""
 
 
+def _postgres_error_reason(error):
+    """Classify driver errors without logging a URI, credential, or SQL."""
+    detail = str(error).lower()
+    for markers, reason in (
+        (("tenant or user not found", "tenant not found"), "pooler could not find the project or user"),
+        (("password authentication failed", "wrong password", "no password supplied"), "database password rejected or missing"),
+        (("certificate", "ssl error", "tls error", "does not support ssl"), "database TLS verification or negotiation failed"),
+        (("invalid percent-encoded", "invalid uri", "missing \"=\""), "invalid database connection string"),
+        (("could not translate host name", "name or service not known"), "database hostname could not be resolved"),
+        (("timeout expired", "timed out"), "database connection timed out"),
+        (("connection refused", "network is unreachable", "no route to host"), "database network connection failed"),
+        (("permission denied", "insufficient privilege"), "database role lacks required permissions"),
+    ):
+        if any(marker in detail for marker in markers):
+            return reason
+    return type(error).__name__
+
+
 class Store:
     def __init__(self, path=":memory:", *, database_url=""):
         self.path = str(path)
@@ -141,7 +159,7 @@ class Store:
                 with self._conn.transaction():
                     return fn(self._conn, *args)
             except postgres.psycopg.Error as error:
-                raise StoreError(f"PostgreSQL request failed ({type(error).__name__})") from None
+                raise StoreError(f"PostgreSQL request failed ({_postgres_error_reason(error)})") from None
 
         if self._conn is None:
             self._conn = self._connect_sqlite()
