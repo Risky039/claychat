@@ -3,9 +3,11 @@ import { Avatar, Icon, shortTime } from "./Icons.jsx";
 import { ALLOWED_EMOJI, dayLabel } from "../messages.js";
 
 const EMPTY_ENTRIES = [];
+const EMPTY_COMPOSER = { draft: "", pendingAttachment: null, uploading: false, uploadError: "" };
 
 function entryKey(entry) {
-  return entry ? `${entry.id ?? ""}|${entry.kind}|${entry.time ?? ""}|${entry.text}` : "";
+  if (entry?.id != null) return `message:${entry.id}`;
+  return entry ? `${entry.kind}|${entry.time ?? ""}|${entry.text}` : "";
 }
 
 function formatSize(bytes) {
@@ -29,21 +31,21 @@ export default function Conversation({
   onLoadOlder,
   onOpenPanel,
 }) {
-  const [draft, setDraft] = useState("");
+  const [composers, setComposers] = useState({});
+  const [showLatest, setShowLatest] = useState(false);
   const [messageOptions, setMessageOptions] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [editingText, setEditingText] = useState("");
-  const [pendingAttachment, setPendingAttachment] = useState(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState("");
   const feedRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
-  const lastReadRef = useRef(0);
+  const lastReadRef = useRef({});
   const atBottom = useRef(true);
   const scrollMemo = useRef({ channel: "", first: "", last: "", height: 0 });
   const room = state.active.type === "room";
   const channel = `${state.active.type}:${state.active.id.toLowerCase()}`;
+  const composerKey = `${state.username.toLowerCase()}:${channel}`;
+  const { draft, pendingAttachment, uploading, uploadError } = composers[composerKey] || EMPTY_COMPOSER;
   const dmKey = state.active.id.toLowerCase();
   const entries = room ? state.roomMessages[state.active.id] || EMPTY_ENTRIES : state.dmMessages[dmKey] || EMPTY_ENTRIES;
   const hasMore = room ? state.roomHasMore[state.active.id] : state.dmHasMore[dmKey];
@@ -52,21 +54,55 @@ export default function Conversation({
     (u) => u.toLowerCase() !== state.username.toLowerCase()
   );
 
-  // New message at the bottom or switched channel: go to the bottom.
-  // Older messages added on top: keep the reader's place.
+  function updateComposer(update) {
+    setComposers((current) => ({
+      ...current,
+      [composerKey]: { ...(current[composerKey] || EMPTY_COMPOSER), ...update },
+    }));
+  }
+
+  function jumpToLatest() {
+    const feed = feedRef.current;
+    feed.scrollTop = feed.scrollHeight;
+    atBottom.current = true;
+    setShowLatest(false);
+    markLatestRead();
+  }
+
+  function markLatestRead() {
+    if (state.status !== "connected" || !onMarkRead || !atBottom.current) return;
+    const latest = entries.findLast((entry) => entry.id != null && entry.username?.toLowerCase() !== state.username.toLowerCase());
+    if (latest && latest.id > (lastReadRef.current[composerKey] || 0)) {
+      lastReadRef.current[composerKey] = latest.id;
+      onMarkRead(latest.id);
+    }
+  }
+
   useLayoutEffect(() => {
     const feed = feedRef.current;
     if (!feed) return;
     const first = entryKey(entries[0]);
     const last = entryKey(entries[entries.length - 1]);
     const memo = scrollMemo.current;
-    if (channel !== memo.channel || last !== memo.last) {
+    const prepended = first !== memo.first && entries.findIndex((entry) => entryKey(entry) === memo.first) > 0;
+    const latest = entries[entries.length - 1];
+    const ownMessage = latest?.username?.toLowerCase() === state.username.toLowerCase();
+    if (channel !== memo.channel || (last !== memo.last && (atBottom.current || ownMessage))) {
       feed.scrollTop = feed.scrollHeight;
       atBottom.current = true;
+      setShowLatest(false);
+    } else {
+      if (prepended) feed.scrollTop += feed.scrollHeight - memo.height;
+      if (last !== memo.last) setShowLatest(true);
     }
-    else if (first !== memo.first) feed.scrollTop += feed.scrollHeight - memo.height;
     scrollMemo.current = { channel, first, last, height: feed.scrollHeight };
-  }, [channel, entries]);
+  }, [channel, entries, state.username]);
+
+  useLayoutEffect(() => {
+    if (!inputRef.current) return;
+    inputRef.current.style.height = "auto";
+    inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 150) + "px";
+  }, [composerKey, draft]);
 
   useEffect(() => {
     const feed = feedRef.current;
@@ -79,32 +115,21 @@ export default function Conversation({
 
   // Automatically send read receipt for the latest message from someone else in the active channel
   useEffect(() => {
-    if (state.status !== "connected" || !onMarkRead) return;
-    for (let i = entries.length - 1; i >= 0; i -= 1) {
-      const entry = entries[i];
-      if (entry.id != null && entry.username && entry.username.toLowerCase() !== state.username.toLowerCase()) {
-        if (entry.id > lastReadRef.current) {
-          lastReadRef.current = entry.id;
-          onMarkRead(entry.id);
-        }
-        break;
-      }
-    }
-  }, [entries, state.status, state.username, onMarkRead]);
+    markLatestRead();
+  }, [entries, state.status, state.username, onMarkRead, composerKey]);
 
   async function handleFileSelect(event) {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file || !onUpload) return;
-    setUploading(true);
-    setUploadError("");
+    updateComposer({ uploading: true, uploadError: "" });
     try {
       const uploaded = await onUpload(file);
-      setPendingAttachment(uploaded);
+      updateComposer({ pendingAttachment: uploaded });
     } catch (err) {
-      setUploadError(err.message || "Upload failed");
+      updateComposer({ uploadError: err.message || "Upload failed" });
     } finally {
-      setUploading(false);
+      updateComposer({ uploading: false });
     }
   }
 
@@ -113,9 +138,7 @@ export default function Conversation({
     const text = draft.trim();
     if ((!text && !pendingAttachment) || state.status !== "connected") return;
     if (onSend(text, pendingAttachment?.id || null)) {
-      setDraft("");
-      setPendingAttachment(null);
-      setUploadError("");
+      updateComposer({ draft: "", pendingAttachment: null, uploadError: "" });
       if (inputRef.current) inputRef.current.style.height = "auto";
     }
   }
@@ -145,6 +168,10 @@ export default function Conversation({
       <div className="chat-feed" ref={feedRef} role="log" aria-live="polite" aria-relevant="additions" onScroll={(event) => {
         const feed = event.currentTarget;
         atBottom.current = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 32;
+        if (atBottom.current) {
+          setShowLatest(false);
+          markLatestRead();
+        }
       }}>
         {entries.length ? <>{hasMore ? <div className="load-older"><button type="button" onClick={() => onLoadOlder(state.active.id)} disabled={loadingOlder || state.status !== "connected"}>{loadingOlder ? "Loading..." : "Load earlier messages"}</button></div> : null}{entries.map((entry, index) => {
           const day = dayLabel(entry.time);
@@ -224,11 +251,12 @@ export default function Conversation({
         })}</> : <div className="empty-chat"><div className="empty-art"><Icon name="chat" /></div><h2>{room ? `Welcome to #${state.active.id}.` : `Say hello to ${state.active.id}.`}</h2><p>{room ? "Start the conversation with a message below." : "This direct message is only visible to the two of you."}</p></div>}
       </div>
 
+      {showLatest ? <button className="jump-latest" type="button" onClick={jumpToLatest}>Jump to latest <span aria-hidden="true">↓</span></button> : null}
       {typingUsers.length ? <div className="typing-bar" aria-live="polite">{typingUsers.join(", ")} {typingUsers.length === 1 ? "is" : "are"} typing…</div> : null}
       {pendingAttachment ? (
         <div className="pending-attachment">
           <span>📎 {pendingAttachment.name} ({formatSize(pendingAttachment.size)})</span>
-          <button type="button" onClick={() => setPendingAttachment(null)} aria-label="Remove attachment">✕</button>
+          <button type="button" onClick={() => updateComposer({ pendingAttachment: null })} aria-label="Remove attachment">✕</button>
         </div>
       ) : null}
       {uploadError ? <div className="upload-error" role="alert">{uploadError}</div> : null}
@@ -237,7 +265,7 @@ export default function Conversation({
         <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,.txt,.md,.json,.csv" hidden onChange={handleFileSelect} />
         <button type="button" className="attach-button" onClick={() => fileInputRef.current?.click()} disabled={state.status !== "connected" || uploading} title="Attach image or file" aria-label="Attach image or file">{uploading ? "…" : "📎"}</button>
         <label className="sr-only" htmlFor="chatInput">Message</label>
-        <textarea id="chatInput" ref={inputRef} rows={1} maxLength={2000} value={draft} disabled={state.status !== "connected"} onChange={(event) => { setDraft(event.target.value); if (onNotifyTyping && event.target.value.trim()) onNotifyTyping(); event.target.style.height = "auto"; event.target.style.height = Math.min(event.target.scrollHeight, 150) + "px"; }} onKeyDown={(event) => {
+        <textarea id="chatInput" ref={inputRef} rows={1} maxLength={2000} value={draft} disabled={state.status !== "connected"} onChange={(event) => { updateComposer({ draft: event.target.value }); if (onNotifyTyping && event.target.value.trim()) onNotifyTyping(); }} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && !window.matchMedia("(pointer: coarse)").matches) {
             event.preventDefault();
             event.currentTarget.form.requestSubmit();

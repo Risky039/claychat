@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from chat.store import Store, dm_key
+from chat.store import MIGRATIONS, Store, dm_key
 
 
 class StoreTest(unittest.IsolatedAsyncioTestCase):
@@ -71,6 +71,43 @@ class StoreTest(unittest.IsolatedAsyncioTestCase):
 
 
 class StoreFileTest(unittest.IsolatedAsyncioTestCase):
+    async def test_existing_attachment_metadata_survives_the_content_migration(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "chat.db"
+            with sqlite3.connect(path) as raw:
+                for version, migration in enumerate(MIGRATIONS[:3], start=1):
+                    raw.executescript(migration)
+                    raw.execute(f"PRAGMA user_version = {version}")
+                raw.execute(
+                    "INSERT INTO attachments VALUES (?, ?, ?, ?, ?, ?)",
+                    ("old", "alice", "old.txt", "text/plain", 3, "2026-11-10T00:00:00+00:00"),
+                )
+            store = Store(path)
+            try:
+                existing = await store.get_attachment("old", include_content=True)
+                self.assertEqual(existing["name"], "old.txt")
+                self.assertIsNone(existing["content"])
+                await store.preserve_attachment("old", b"old")
+                self.assertEqual((await store.get_attachment("old", include_content=True))["content"], b"old")
+            finally:
+                await store.close()
+
+    async def test_uploaded_bytes_survive_reopen(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "chat.db"
+            store = Store(path)
+            content = b"persisted upload"
+            await store.create_attachment("file", "alice", "note.txt", "text/plain", len(content), content=content)
+            await store.close()
+
+            reopened = Store(path)
+            try:
+                saved = await reopened.get_attachment("file", include_content=True)
+                self.assertEqual(saved["content"], content)
+                self.assertNotIn("content", await reopened.get_attachment("file"))
+            finally:
+                await reopened.close()
+
     async def test_messages_survive_reopen_and_schema_is_versioned(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "nested" / "chat.db"
