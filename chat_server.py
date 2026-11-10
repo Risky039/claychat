@@ -24,9 +24,10 @@ async def main():
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     settings = Settings.from_env()
-    chat = ChatServer(store=Store(settings.db_path), settings=settings)
+    chat = ChatServer(store=Store(settings.db_path, database_url=settings.database_url), settings=settings)
     server = await asyncio.start_server(chat.handle, args.host, args.port, limit=MAX_LINE)
-    print(f"TCP chat listening on {args.host}:{args.port} (history: {settings.db_path})", flush=True)
+    history = "PostgreSQL" if settings.database_url else settings.db_path
+    print(f"TCP chat listening on {args.host}:{args.port} (history: {history})", flush=True)
     try:
         async with server:
             await server.serve_forever()
