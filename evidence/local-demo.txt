@@ -1,0 +1,17 @@
+test_ai_remembers_followups_and_isolates_users (test_chat.ChatTest.test_ai_remembers_followups_and_isolates_users) ... ok
+test_duplicate_name_and_invalid_json (test_chat.ChatTest.test_duplicate_name_and_invalid_json) ... ok
+test_failed_ai_reply_does_not_enter_history (test_chat.ChatTest.test_failed_ai_reply_does_not_enter_history) ... ok
+test_meta_ai_command_and_missing_key (test_chat.ChatTest.test_meta_ai_command_and_missing_key) ... ok
+test_reset_discards_an_in_flight_answer (test_chat.ChatTest.test_reset_discards_an_in_flight_answer) ... ok
+test_two_users_rooms_dm_and_disconnect (test_chat.ChatTest.test_two_users_rooms_dm_and_disconnect) ... ok
+test_rejects_cross_origin_websocket (test_web_app.GatewayTest.test_rejects_cross_origin_websocket) ... ok
+test_two_browser_clients_share_tcp_chat (test_web_app.GatewayTest.test_two_browser_clients_share_tcp_chat) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 10.783s
+
+OK
+alice -> lobby: Hello, Bob!
+bob -> lobby: Hi, Alice!
+alice -> bob (DM): Private hello
+Two browser WebSockets exchanged messages through the TCP server

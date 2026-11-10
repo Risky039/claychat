@@ -1,0 +1,5 @@
+First AI reply: Got it � coral noted.
+Follow-up AI reply: coral
+Context retained: True
+History turns: 2
+Reset: AI conversation cleared

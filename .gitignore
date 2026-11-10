@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+*.pem
+*.key
+deployment-private/
+frontend/node_modules/
+frontend/dist/
+frontend/.npm-cache/
+data/
