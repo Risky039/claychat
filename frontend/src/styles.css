@@ -18,6 +18,21 @@
   display: none;
 }
 
+.jump-latest {
+  align-self: center;
+  flex: none;
+  min-height: 44px;
+  margin: 2px 12px 6px;
+  padding: 9px 18px;
+  border: 1px solid #d1c4ee;
+  border-radius: 24px;
+  background: #f1ebfc;
+  color: #6550a5;
+  font-size: 13px;
+  font-weight: 800;
+  box-shadow: 2px 3px 8px #c7bddd66;
+}
+
 .attachment-image {
   max-width: min(240px, 100%);
   object-fit: contain;

@@ -69,7 +69,7 @@ export default function App() {
       <div className="ambient ambient-one" /><div className="ambient ambient-two" /><div className="ambient ambient-three" />
       <div className="app-shell" inert={!chat.state.joined || transportOpen}>
         <Sidebar state={chat.state} open={panel === "navigation-panel"} inert={panel === "assistant-panel"} onClose={closePanel} onJoinRoom={chat.joinRoom} onSelectDm={chat.selectDm} onSignOut={() => { closePanel(); chat.signOut(); }} />
-        <Conversation state={chat.state} inert={mobilePanelOpen} panel={panel} onSend={chat.sendMessage} onNotifyTyping={chat.notifyTyping} onEdit={chat.editMessage} onDelete={chat.deleteMessage} onReact={chat.toggleReaction} onMarkRead={chat.markRead} onUpload={chat.uploadAttachment} onLoadOlder={chat.loadOlder} onOpenPanel={openPanel} />
+        <Conversation key={chat.state.username.toLowerCase()} state={chat.state} inert={mobilePanelOpen} panel={panel} onSend={chat.sendMessage} onNotifyTyping={chat.notifyTyping} onEdit={chat.editMessage} onDelete={chat.deleteMessage} onReact={chat.toggleReaction} onMarkRead={chat.markRead} onUpload={chat.uploadAttachment} onLoadOlder={chat.loadOlder} onOpenPanel={openPanel} />
         <AiPanel state={chat.state} open={panel === "assistant-panel"} inert={panel === "navigation-panel"} onClose={closePanel} onSend={chat.sendAi} onSummarize={chat.summarizeRoom} onHistory={chat.showAiHistory} onReset={chat.resetAi} />
         {mobilePanelOpen ? <div className="mobile-backdrop" onClick={closePanel} /> : null}
       </div>

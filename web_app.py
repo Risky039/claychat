@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from aiohttp import WSMsgType, web
 
 from chat.auth import valid_password
+from chat.attachment_migration import preserve_legacy_uploads
 from chat.config import Settings
 from chat.protocol import MAX_LINE, valid_name
 from chat.ratelimit import RateLimiter
@@ -208,24 +209,24 @@ def create_web_app(tcp_host="127.0.0.1", tcp_port=8765, store=None, settings=Non
         uploader = user["username"] if user else "guest"
         att_id = new_attachment_id()
 
-        def _write_disk():
-            upload_dir.mkdir(parents=True, exist_ok=True)
-            (upload_dir / att_id).write_bytes(data)
-
-        await asyncio.to_thread(_write_disk)
-        meta = await store.create_attachment(att_id, uploader, filename, mime, len(data))
+        meta = await store.create_attachment(att_id, uploader, filename, mime, len(data), content=data)
         return web.json_response(meta, status=201)
 
     async def download_file(request):
         att_id = request.match_info.get("id", "")
         if not valid_attachment_id(att_id):
             raise web.HTTPNotFound()
-        meta = await store.get_attachment(att_id)
-        target = (upload_dir / att_id).resolve()
-        if meta is None or not target.is_relative_to(upload_dir) or not target.is_file():
+        meta = await store.get_attachment(att_id, include_content=True)
+        if meta is None:
             raise web.HTTPNotFound()
         disposition = "inline" if meta["mime"].startswith("image/") else "attachment"
-        response = web.FileResponse(target)
+        if meta["content"] is not None:
+            response = web.Response(body=meta["content"])
+        else:
+            target = (upload_dir / att_id).resolve()
+            if not target.is_relative_to(upload_dir) or not target.is_file():
+                raise web.HTTPNotFound()
+            response = web.FileResponse(target)
         response.headers["Content-Type"] = meta["mime"]
         response.headers["Content-Disposition"] = f'{disposition}; filename="{clean_filename(meta["name"])}"'
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -362,6 +363,7 @@ async def main():
     try:
         if settings.database_url:
             await store.user_exists("__readyz__")
+        await preserve_legacy_uploads(store, settings.upload_dir, os.getenv("RENDER_EXTERNAL_URL", ""))
         await runner.setup()
         site = web.TCPSite(runner, args.web_host, args.web_port)
         await site.start()

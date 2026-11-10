@@ -78,6 +78,9 @@ MIGRATIONS = (
         PRIMARY KEY (scope, username_lower)
     );
     """,
+    """
+    ALTER TABLE attachments ADD COLUMN content BYTEA;
+    """,
 )
 
 
@@ -185,12 +188,12 @@ class Store:
             self._conn = None
         self._executor.shutdown(wait=True)
 
-    async def create_attachment(self, att_id, uploader, filename, mime, size):
+    async def create_attachment(self, att_id, uploader, filename, mime, size, content=None):
         def insert(conn):
             created = now_iso()
             conn.execute(
-                "INSERT INTO attachments (id, uploader, filename, mime, size, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (att_id, uploader, filename, mime, size, created),
+                "INSERT INTO attachments (id, uploader, filename, mime, size, created_at, content) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (att_id, uploader, filename, mime, size, created, content),
             )
             return {
                 "id": att_id,
@@ -202,15 +205,36 @@ class Store:
 
         return await self._run(insert)
 
-    async def get_attachment(self, att_id):
+    async def get_attachment(self, att_id, *, include_content=False):
         def select(conn):
             row = conn.execute(
-                "SELECT id, filename, mime, size FROM attachments WHERE id = ?",
+                "SELECT id, filename, mime, size, content FROM attachments WHERE id = ?",
                 (att_id,),
             ).fetchone()
-            return _attachment_dict(row)
+            attachment = _attachment_dict(row)
+            if attachment is not None and include_content:
+                attachment["content"] = bytes(row[4]) if row[4] is not None else None
+            return attachment
 
         return await self._run(select)
+
+    async def legacy_attachments(self):
+        def select(conn):
+            rows = conn.execute(
+                "SELECT id, filename, mime, size FROM attachments WHERE content IS NULL"
+            ).fetchall()
+            return [_attachment_dict(row) for row in rows]
+
+        return await self._run(select)
+
+    async def preserve_attachment(self, att_id, content):
+        def update(conn):
+            conn.execute(
+                "UPDATE attachments SET content = ? WHERE id = ? AND content IS NULL",
+                (content, att_id),
+            )
+
+        await self._run(update)
 
     async def add_room_message(self, room, author, text, attachment_id=None):
         def insert(conn):
