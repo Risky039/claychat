@@ -1,5 +1,6 @@
 """PostgreSQL connection and migrations for the chat store."""
 
+import os
 from pathlib import Path
 
 import psycopg
@@ -15,6 +16,9 @@ class ChatConnection(psycopg.Connection):
 
 def connect(database_url, migrations):
     options = conninfo_to_dict(database_url)
+    password = os.getenv("CHAT_DATABASE_PASSWORD")
+    if password:
+        options["password"] = password
     options.setdefault("connect_timeout", "5")
     default_ssl = "sslmode" not in options
     sslmode = options.setdefault("sslmode", "verify-full")
