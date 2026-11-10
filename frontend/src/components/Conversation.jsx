@@ -15,9 +15,10 @@ export default function Conversation({ state, onSend, onLoadOlder, onOpenNav, on
   const scrollMemo = useRef({ channel: "", first: "", last: "", height: 0 });
   const room = state.active.type === "room";
   const channel = `${state.active.type}:${state.active.id.toLowerCase()}`;
-  const entries = room ? state.roomMessages[state.active.id] || EMPTY_ENTRIES : state.dmMessages[state.active.id.toLowerCase()] || EMPTY_ENTRIES;
-  const hasMore = room && state.roomHasMore[state.active.id];
-  const loadingOlder = room && state.roomLoadingOlder[state.active.id];
+  const dmKey = state.active.id.toLowerCase();
+  const entries = room ? state.roomMessages[state.active.id] || EMPTY_ENTRIES : state.dmMessages[dmKey] || EMPTY_ENTRIES;
+  const hasMore = room ? state.roomHasMore[state.active.id] : state.dmHasMore[dmKey];
+  const loadingOlder = room ? state.roomLoadingOlder[state.active.id] : state.dmLoadingOlder[dmKey];
 
   // New message at the bottom or switched channel: go to the bottom.
   // Older messages added on top: keep the reader's place.

@@ -1,5 +1,6 @@
-"""Connection lifecycle: framing, registration, dispatch, and cleanup."""
+"""Connection lifecycle: framing, registration, dispatch, timeouts, and cleanup."""
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -9,6 +10,7 @@ from chat.handlers import HANDLERS
 from chat.handlers.rooms import send_history
 from chat.peer import Peer
 from chat.protocol import MAX_LINE, packet, valid_name
+from chat.ratelimit import RateLimiter
 from chat.store import Store
 
 log = logging.getLogger(__name__)
@@ -25,6 +27,9 @@ class ChatServer:
         self.api_key = settings.api_key
         self.model = settings.model
         self.history_limit = settings.history_limit
+        self.hello_timeout = settings.hello_timeout
+        self.idle_timeout = settings.idle_timeout
+        self.msg_limiter = RateLimiter(rate=settings.msg_rate, capacity=settings.msg_burst)
 
     def broadcast(self, room, item, exclude=None):
         for peer in tuple(self.peers.values()):
@@ -39,13 +44,16 @@ class ChatServer:
         try:
             peer.send(packet("info", text=HELLO_HINT))
             while not reader.at_eof():
-                msg = await self._read_frame(peer)
+                timeout = self.hello_timeout if peer.name is None else self.idle_timeout
+                msg = await self._read_frame(peer, timeout=timeout)
                 if msg is False:
                     break
                 if msg is None:
                     continue
                 if peer.name is None:
                     await self._register(peer, msg)
+                elif msg.get("type") == "ping":
+                    peer.send(packet("pong"))
                 elif msg.get("type") == "quit":
                     break
                 else:
@@ -55,10 +63,14 @@ class ChatServer:
         finally:
             await self._cleanup(peer, writer)
 
-    async def _read_frame(self, peer):
+    async def _read_frame(self, peer, timeout=None):
         """Return a dict, None for a bad-but-recoverable frame, or False to disconnect."""
         try:
-            raw = await peer.reader.readline()
+            raw = await asyncio.wait_for(peer.reader.readline(), timeout=timeout)
+        except asyncio.TimeoutError:
+            label = "Registration timeout" if peer.name is None else "Idle timeout"
+            peer.send(packet("error", text=f"{label}: connection closed"))
+            return False
         except ValueError:
             peer.send(packet("error", text=f"Frame exceeds {MAX_LINE} bytes"))
             return False
@@ -75,17 +87,40 @@ class ChatServer:
         return msg
 
     async def _register(self, peer, msg):
-        name = msg.get("username")
-        if msg.get("type") != "hello" or not valid_name(name):
+        if msg.get("type") != "hello":
             peer.send(packet("error", text=NAME_RULE))
             return
-        if name.lower() in self.peers:
-            peer.send(packet("error", text="Username is already in use"))
-            return
-        peer.name = name
+
+        token = msg.get("token")
+        if isinstance(token, str) and token.strip():
+            user = await self.store.user_by_token(token.strip())
+            if user is None:
+                peer.send(packet("error", text="Invalid or expired session token"))
+                return
+            name = user["username"]
+            if name.lower() in self.peers:
+                peer.send(packet("error", text="Username is already in use"))
+                return
+            peer.name = name
+            peer.user_id = user["id"]
+            peer.authenticated = True
+        else:
+            name = msg.get("username")
+            if not valid_name(name):
+                peer.send(packet("error", text=NAME_RULE))
+                return
+            if await self.store.user_exists(name):
+                peer.send(packet("error", text="Username is registered; sign in with your password"))
+                return
+            if name.lower() in self.peers:
+                peer.send(packet("error", text="Username is already in use"))
+                return
+            peer.name = name
+            peer.authenticated = False
+
         self.peers[peer.key] = peer
-        peer.send(packet("welcome", username=name, room=peer.room))
-        self.broadcast(peer.room, packet("presence", username=name, action="joined"), exclude=peer)
+        peer.send(packet("welcome", username=peer.name, room=peer.room, authenticated=peer.authenticated))
+        self.broadcast(peer.room, packet("presence", username=peer.name, action="joined"), exclude=peer)
         await self._guarded(peer, send_history(self, peer, peer.room))
 
     async def _dispatch(self, peer, msg):
@@ -109,10 +144,13 @@ class ChatServer:
         if peer.name and self.peers.get(peer.key) is peer:
             del self.peers[peer.key]
             self.broadcast(peer.room, packet("presence", username=peer.name, action="left"))
-        peer.sender.cancel()
+        try:
+            peer.outbox.put_nowait(None)
+            await asyncio.wait_for(peer.sender, timeout=0.5)
+        except (asyncio.QueueFull, asyncio.TimeoutError, asyncio.CancelledError):
+            peer.sender.cancel()
         writer.close()
         try:
             await writer.wait_closed()
         except (ConnectionError, OSError):
             pass
-

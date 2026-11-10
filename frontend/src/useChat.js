@@ -3,6 +3,8 @@ import { mergeMessages } from "./messages.js";
 
 const initialState = {
   username: "",
+  authenticated: false,
+  inviteRequired: false,
   status: "offline",
   registered: false,
   joined: false,
@@ -16,6 +18,8 @@ const initialState = {
   dmUnread: {},
   roomHasMore: {},
   roomLoadingOlder: {},
+  dmHasMore: {},
+  dmLoadingOlder: {},
   users: [],
   aiMessages: [],
   aiPending: false,
@@ -38,6 +42,8 @@ function addSystem(state, text, room = state.currentRoom) {
 
 function reducer(state, action) {
   switch (action.type) {
+    case "SESSION_INFO":
+      return { ...state, inviteRequired: Boolean(action.inviteRequired) };
     case "JOIN_ATTEMPT":
       return { ...state, username: action.username, status: "connecting", joinError: "" };
     case "CONNECTING":
@@ -49,10 +55,13 @@ function reducer(state, action) {
         registered: false,
         users: [],
         roomLoadingOlder: {},
+        dmLoadingOlder: {},
         joinError: state.joinError || (state.joined ? "" : "Could not reach the chat server. Try again."),
       };
     case "JOIN_REJECTED":
       return { ...state, joined: false, registered: false, status: "offline", joinError: action.text };
+    case "SIGNED_OUT":
+      return { ...initialState, inviteRequired: state.inviteRequired };
     case "SEND":
       return { ...state, events: [...state.events, { direction: "out", item: action.item, time: new Date().toISOString() }].slice(-80) };
     case "CLEAR_EVENTS":
@@ -71,6 +80,8 @@ function reducer(state, action) {
       return { ...state, aiPending: true, aiMessages: [...state.aiMessages, { role: "user", content: action.text, time: new Date().toISOString() }] };
     case "HISTORY_REQUEST":
       return { ...state, roomLoadingOlder: { ...state.roomLoadingOlder, [action.room]: true } };
+    case "DM_HISTORY_REQUEST":
+      return { ...state, dmLoadingOlder: { ...state.dmLoadingOlder, [action.key]: true } };
     case "RECEIVE": {
       const item = action.item;
       let next = { ...state, events: [...state.events, { direction: "in", item, time: new Date().toISOString() }].slice(-80) };
@@ -80,6 +91,8 @@ function reducer(state, action) {
         case "welcome":
           next = {
             ...next,
+            username: item.username || state.username,
+            authenticated: Boolean(item.authenticated),
             registered: true,
             joined: true,
             status: "connected",
@@ -88,7 +101,7 @@ function reducer(state, action) {
             aiMessages: state.joined ? [] : state.aiMessages,
             aiPending: false,
           };
-          return addSystem(next, state.joined ? "Reconnected. Your private AI context starts fresh." : `Welcome, ${state.username}. You're in #lobby.`);
+          return addSystem(next, state.joined ? "Reconnected. Your private AI context starts fresh." : `Welcome, ${item.username || state.username}. You're in #lobby.`);
         case "joined": {
           const unread = { ...next.roomUnread };
           delete unread[item.room];
@@ -106,7 +119,7 @@ function reducer(state, action) {
           if (hasMessage(next.roomMessages[item.room] || [], item.id)) return next;
           next.roomMessages = appendTo(next.roomMessages, item.room, { kind: "message", ...item });
           if (state.active.type !== "room" || state.active.id !== item.room) {
-            next.roomUnread = { ...state.roomUnread, [item.room]: (state.roomUnread[item.room] || 0) + 1 };
+            next.roomUnread = { ...next.roomUnread, [item.room]: (state.roomUnread[item.room] || 0) + 1 };
           }
           return next;
         }
@@ -122,11 +135,22 @@ function reducer(state, action) {
         case "dm": {
           const other = item.username.toLowerCase() === state.username.toLowerCase() ? item.to : item.username;
           const key = other.toLowerCase();
+          if (hasMessage(next.dmMessages[key] || [], item.id)) return next;
           next.dmMessages = appendTo(next.dmMessages, key, { kind: "message", ...item });
           if (state.active.type !== "dm" || state.active.id.toLowerCase() !== key) {
-            next.dmUnread = { ...state.dmUnread, [key]: (state.dmUnread[key] || 0) + 1 };
+            next.dmUnread = { ...next.dmUnread, [key]: (state.dmUnread[key] || 0) + 1 };
           }
           return next;
+        }
+        case "dm_history": {
+          const key = (item.with_user || "").toLowerCase();
+          const incoming = (item.messages || []).map((message) => ({ kind: "message", ...message }));
+          return {
+            ...next,
+            dmMessages: { ...next.dmMessages, [key]: mergeMessages(next.dmMessages[key] || [], incoming) },
+            dmHasMore: { ...next.dmHasMore, [key]: Boolean(item.has_more) },
+            dmLoadingOlder: { ...next.dmLoadingOlder, [key]: false },
+          };
         }
         case "presence":
           return addSystem(next, `${item.username} ${item.action} the room.`);
@@ -160,6 +184,7 @@ export function useChat() {
   const stateRef = useRef(state);
   const socketRef = useRef(null);
   const timerRef = useRef(null);
+  const attemptsRef = useRef(0);
   const disposedRef = useRef(false);
   const allowReconnectRef = useRef(true);
   stateRef.current = state;
@@ -172,7 +197,7 @@ export function useChat() {
     return true;
   }, []);
 
-  const connect = useCallback((username) => {
+  const connect = useCallback((username, useSession = false) => {
     clearTimeout(timerRef.current);
     if (socketRef.current) socketRef.current.close();
     dispatch({ type: "CONNECTING" });
@@ -181,7 +206,8 @@ export function useChat() {
     socketRef.current = socket;
 
     socket.addEventListener("open", () => {
-      if (socketRef.current === socket && !disposedRef.current) send({ type: "hello", username });
+      if (socketRef.current !== socket || disposedRef.current) return;
+      send(useSession ? { type: "hello", username } : { type: "hello", username });
     });
 
     socket.addEventListener("message", (event) => {
@@ -193,7 +219,12 @@ export function useChat() {
         dispatch({ type: "RECEIVE", item: { type: "error", text: "The server sent an unreadable message." } });
         return;
       }
-      if (item.type === "error" && !stateRef.current.registered && item.text?.includes("already in use")) {
+      if (item.type === "error" && !stateRef.current.registered) {
+        // During an automatic reconnect, the previous TCP socket may still be closing; retry with backoff.
+        if (stateRef.current.joined && item.text?.includes("already in use")) {
+          socket.close();
+          return;
+        }
         allowReconnectRef.current = false;
         dispatch({ type: "JOIN_REJECTED", text: item.text });
         socket.close();
@@ -201,6 +232,7 @@ export function useChat() {
       }
       dispatch({ type: "RECEIVE", item });
       if (item.type === "welcome") {
+        attemptsRef.current = 0;
         if (stateRef.current.currentRoom !== item.room) send({ type: "join", room: stateRef.current.currentRoom });
         else send({ type: "users" });
       } else if (item.type === "joined" || item.type === "presence") {
@@ -212,39 +244,107 @@ export function useChat() {
       if (socketRef.current !== socket || disposedRef.current) return;
       dispatch({ type: "DISCONNECTED" });
       if (allowReconnectRef.current && stateRef.current.joined) {
-        timerRef.current = setTimeout(() => connect(stateRef.current.username), 3000);
+        const delay = Math.min(15000, 1500 * Math.pow(1.6, attemptsRef.current++));
+        timerRef.current = setTimeout(() => connect(stateRef.current.username, stateRef.current.authenticated), delay);
       }
     });
   }, [send]);
 
   useEffect(() => {
     disposedRef.current = false;
+    fetch("/api/me", { credentials: "same-origin" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((info) => {
+        if (!info || disposedRef.current) return;
+        dispatch({ type: "SESSION_INFO", inviteRequired: info.invite_required });
+        if (info.authenticated && info.username) {
+          allowReconnectRef.current = true;
+          dispatch({ type: "JOIN_ATTEMPT", username: info.username });
+          connect(info.username, true);
+        }
+      })
+      .catch(() => {});
     return () => {
       disposedRef.current = true;
       clearTimeout(timerRef.current);
       socketRef.current?.close();
     };
-  }, []);
+  }, [connect]);
 
   const join = useCallback((username) => {
     allowReconnectRef.current = true;
+    attemptsRef.current = 0;
     dispatch({ type: "JOIN_ATTEMPT", username });
     window.localStorage.setItem("claychat-nickname", username);
-    connect(username);
+    connect(username, false);
   }, [connect]);
+
+  const authenticate = useCallback(async (mode, { username, password, inviteCode }) => {
+    const endpoint = mode === "register" ? "/api/register" : "/api/login";
+    dispatch({ type: "JOIN_ATTEMPT", username });
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ username, password, invite_code: inviteCode || "" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        dispatch({ type: "JOIN_REJECTED", text: data.error || "Authentication failed" });
+        return false;
+      }
+      allowReconnectRef.current = true;
+      attemptsRef.current = 0;
+      window.localStorage.setItem("claychat-nickname", data.username);
+      connect(data.username, true);
+      return true;
+    } catch {
+      dispatch({ type: "JOIN_REJECTED", text: "Could not reach the authentication server." });
+      return false;
+    }
+  }, [connect]);
+
+  const signOut = useCallback(async () => {
+    allowReconnectRef.current = false;
+    clearTimeout(timerRef.current);
+    socketRef.current?.close();
+    try {
+      await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
+    } catch {
+      // ignore network error on logout
+    }
+    dispatch({ type: "SIGNED_OUT" });
+  }, []);
 
   const joinRoom = useCallback((room) => {
     if (room === stateRef.current.currentRoom) dispatch({ type: "SELECT_ROOM", room });
     else send({ type: "join", room });
   }, [send]);
 
-  const selectDm = useCallback((name) => dispatch({ type: "SELECT_DM", name }), []);
-
-  const loadOlder = useCallback((room) => {
+  const selectDm = useCallback((name) => {
+    dispatch({ type: "SELECT_DM", name });
     const current = stateRef.current;
-    const oldest = (current.roomMessages[room] || []).find((entry) => entry.id != null);
-    if (!oldest || current.roomLoadingOlder[room] || !current.roomHasMore[room]) return;
-    if (send({ type: "history", room, before: oldest.id })) dispatch({ type: "HISTORY_REQUEST", room });
+    const key = name.toLowerCase();
+    if (current.authenticated && !(current.dmMessages[key] || []).length) {
+      send({ type: "dm_history", with_user: name });
+    }
+  }, [send]);
+
+  const loadOlder = useCallback((target) => {
+    const current = stateRef.current;
+    if (current.active.type === "dm") {
+      const key = target.toLowerCase();
+      const oldest = (current.dmMessages[key] || []).find((entry) => entry.id != null);
+      if (!oldest || current.dmLoadingOlder[key] || !current.dmHasMore[key]) return;
+      if (send({ type: "dm_history", with_user: target, before: oldest.id })) {
+        dispatch({ type: "DM_HISTORY_REQUEST", key });
+      }
+      return;
+    }
+    const oldest = (current.roomMessages[target] || []).find((entry) => entry.id != null);
+    if (!oldest || current.roomLoadingOlder[target] || !current.roomHasMore[target]) return;
+    if (send({ type: "history", room: target, before: oldest.id })) dispatch({ type: "HISTORY_REQUEST", room: target });
   }, [send]);
 
   const sendMessage = useCallback((text) => {
@@ -262,6 +362,8 @@ export function useChat() {
   return {
     state,
     join,
+    authenticate,
+    signOut,
     joinRoom,
     selectDm,
     loadOlder,

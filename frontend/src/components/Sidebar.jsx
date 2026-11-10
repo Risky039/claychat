@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Avatar, Icon } from "./Icons.jsx";
 
-export default function Sidebar({ state, open, onClose, onJoinRoom, onSelectDm }) {
+export default function Sidebar({ state, open, onClose, onJoinRoom, onSelectDm, onSignOut }) {
   const [roomFormOpen, setRoomFormOpen] = useState(false);
   const [roomName, setRoomName] = useState("");
 
@@ -60,7 +60,7 @@ export default function Sidebar({ state, open, onClose, onJoinRoom, onSelectDm }
 
       <div className="sidebar-bottom">
         <div className="tip-card"><div className="tip-icon"><Icon name="spark" /></div><div><strong>Need a hand?</strong><p>Ask Chunky in your private panel.</p></div></div>
-        <div className="profile-card"><Avatar name={state.username} className="avatar self-avatar" /><div className="profile-copy"><strong>{state.username || "Your space"}</strong><small>{state.status === "connected" ? "Online now" : state.status === "reconnecting" ? "Reconnecting" : "Waiting to connect"}</small></div><span className={`online-dot${state.status === "connected" ? " connected" : ""}`} /></div>
+        <div className="profile-card"><Avatar name={state.username} className="avatar self-avatar" /><div className="profile-copy"><strong>{state.username || "Your space"}</strong><small>{state.status === "connected" ? (state.authenticated ? "Verified account" : "Guest session") : state.status === "reconnecting" ? "Reconnecting" : "Waiting to connect"}</small></div>{state.joined && onSignOut ? <button type="button" className="signout-button" onClick={onSignOut} title="Leave or sign out">Leave</button> : <span className={`online-dot${state.status === "connected" ? " connected" : ""}`} />}</div>
       </div>
     </aside>
   );

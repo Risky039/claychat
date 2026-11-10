@@ -1,7 +1,8 @@
-"""Serve the browser UI and bridge each WebSocket to the raw TCP chat server."""
+"""Serve the browser UI, HTTP auth API, and bridge each WebSocket to the raw TCP chat server."""
 
 import argparse
 import asyncio
+import hmac
 import json
 import logging
 from pathlib import Path
@@ -9,17 +10,150 @@ from urllib.parse import urlsplit
 
 from aiohttp import WSMsgType, web
 
+from chat.auth import valid_password
 from chat.config import Settings
-from chat.protocol import MAX_LINE
+from chat.protocol import MAX_LINE, valid_name
+from chat.ratelimit import RateLimiter
 from chat.server import ChatServer
 from chat.store import Store
 
-
 DIST_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
+SESSION_COOKIE = "claychat_session"
+SESSION_MAX_AGE = 30 * 86400
 
 
-def create_web_app(tcp_host="127.0.0.1", tcp_port=8765):
+def _same_origin(request):
+    origin = request.headers.get("Origin")
+    if origin and urlsplit(origin).netloc.lower() != request.host.lower():
+        return False
+    return True
+
+
+def _extract_token(request):
+    cookie = request.cookies.get(SESSION_COOKIE, "").strip()
+    if cookie:
+        return cookie
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return ""
+
+
+def _client_ip(request):
+
+    peername = request.transport.get_extra_info("peername") if request.transport else None
+    return peername[0] if peername else "unknown"
+
+
+def _set_session_cookie(response, request, token):
+    secure = request.secure or request.headers.get("X-Forwarded-Proto", "").lower() == "https"
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        samesite="Lax",
+        secure=secure,
+        path="/",
+    )
+
+
+def create_web_app(tcp_host="127.0.0.1", tcp_port=8765, store=None, settings=None):
+    settings = settings or Settings.from_env()
+    owns_store = store is None
+    store = store or Store(settings.db_path)
+    auth_limiter = RateLimiter(rate=0.2, capacity=8.0)
     app = web.Application(client_max_size=MAX_LINE)
+
+    if owns_store:
+        async def _close_store(_app):
+            await store.close()
+
+        app.on_cleanup.append(_close_store)
+
+    async def _read_json(request):
+        if not _same_origin(request):
+            raise web.HTTPForbidden(text="Cross-origin requests are not allowed")
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise web.HTTPBadRequest(text="Expected a JSON request body") from exc
+        if not isinstance(body, dict):
+            raise web.HTTPBadRequest(text="Expected a JSON object")
+        return body
+
+    async def register(request):
+        body = await _read_json(request)
+        if not auth_limiter.allow(_client_ip(request)):
+            return web.json_response({"error": "Too many attempts; try again shortly"}, status=429)
+        if settings.invite_code:
+            provided = body.get("invite_code", "")
+            if not isinstance(provided, str) or not hmac.compare_digest(provided.strip(), settings.invite_code):
+                return web.json_response({"error": "A valid invite code is required to register"}, status=403)
+        username = body.get("username", "")
+        password = body.get("password", "")
+        if not valid_name(username):
+            return web.json_response(
+                {"error": "Username must be 2-20 letters, digits, or underscores, starting with a letter"},
+                status=400,
+            )
+        if not valid_password(password):
+            return web.json_response({"error": "Password must be 8-128 characters"}, status=400)
+        try:
+            user = await store.create_user(username, password)
+        except ValueError:
+            return web.json_response({"error": "Username is already registered"}, status=409)
+        token = await store.create_session(user["id"])
+        response = web.json_response(
+            {"username": user["username"], "authenticated": True, "token": token},
+            status=201,
+        )
+        _set_session_cookie(response, request, token)
+        return response
+
+    async def login(request):
+        body = await _read_json(request)
+        if not auth_limiter.allow(_client_ip(request)):
+            return web.json_response({"error": "Too many attempts; try again shortly"}, status=429)
+        username = body.get("username", "")
+        password = body.get("password", "")
+        if not isinstance(username, str) or not isinstance(password, str):
+            return web.json_response({"error": "Invalid username or password"}, status=401)
+        user = await store.authenticate_user(username.strip(), password)
+        if user is None:
+            return web.json_response({"error": "Invalid username or password"}, status=401)
+        token = await store.create_session(user["id"])
+        response = web.json_response(
+            {"username": user["username"], "authenticated": True, "token": token},
+            status=200,
+        )
+        _set_session_cookie(response, request, token)
+        return response
+
+    async def logout(request):
+        if not _same_origin(request):
+            raise web.HTTPForbidden(text="Cross-origin requests are not allowed")
+        token = _extract_token(request)
+        if token:
+            await store.revoke_session(token)
+        response = web.json_response({"authenticated": False})
+        response.del_cookie(SESSION_COOKIE, path="/")
+        return response
+
+    async def me(request):
+        token = _extract_token(request)
+        user = await store.user_by_token(token) if token else None
+        if user is None:
+            return web.json_response(
+                {"authenticated": False, "invite_required": bool(settings.invite_code)}
+            )
+        return web.json_response(
+            {
+                "authenticated": True,
+                "username": user["username"],
+                "invite_required": bool(settings.invite_code),
+            }
+        )
 
     async def asset(request):
         name = request.match_info.get("path", "index.html")
@@ -30,7 +164,7 @@ def create_web_app(tcp_host="127.0.0.1", tcp_port=8765):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Content-Security-Policy"] = (
             "default-src 'none'; script-src 'self'; style-src 'self'; "
-            "img-src 'self' data:; connect-src 'self' ws: wss:; "
+            "img-src 'self' data:; connect-src 'self'; "
             "font-src 'self'; base-uri 'none'; form-action 'self'"
         )
         return response
@@ -45,9 +179,9 @@ def create_web_app(tcp_host="127.0.0.1", tcp_port=8765):
         return web.json_response({"status": "ok", "tcp_port": tcp_port})
 
     async def websocket(request):
-        origin = request.headers.get("Origin")
-        if origin and urlsplit(origin).netloc.lower() != request.host.lower():
+        if not _same_origin(request):
             raise web.HTTPForbidden(text="Cross-origin WebSocket connections are not allowed")
+        cookie_token = _extract_token(request)
         try:
             reader, writer = await asyncio.wait_for(asyncio.open_connection(tcp_host, tcp_port), 3)
         except (OSError, asyncio.TimeoutError):
@@ -84,6 +218,8 @@ def create_web_app(tcp_host="127.0.0.1", tcp_port=8765):
                     except (json.JSONDecodeError, ValueError):
                         await ws.send_json({"type": "error", "text": "Expected a JSON object"})
                         continue
+                    if item.get("type") == "hello" and not item.get("token") and cookie_token:
+                        item = {**item, "token": cookie_token}
                     writer.write((json.dumps(item, ensure_ascii=False) + "\n").encode("utf-8"))
                     await writer.drain()
                 elif message.type == WSMsgType.BINARY:
@@ -107,6 +243,10 @@ def create_web_app(tcp_host="127.0.0.1", tcp_port=8765):
                 await ws.close()
         return ws
 
+    app.router.add_post("/api/register", register)
+    app.router.add_post("/api/login", login)
+    app.router.add_post("/api/logout", logout)
+    app.router.add_get("/api/me", me)
     app.router.add_get("/", asset)
     app.router.add_get("/healthz", health)
     app.router.add_get("/ws", websocket)
@@ -124,10 +264,11 @@ async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     settings = Settings.from_env()
-    chat = ChatServer(store=Store(settings.db_path), settings=settings)
+    store = Store(settings.db_path)
+    chat = ChatServer(store=store, settings=settings)
     tcp = await asyncio.start_server(chat.handle, args.tcp_host, args.tcp_port, limit=MAX_LINE)
     gateway_host = "127.0.0.1" if args.tcp_host in {"0.0.0.0", "::"} else args.tcp_host
-    runner = web.AppRunner(create_web_app(gateway_host, args.tcp_port))
+    runner = web.AppRunner(create_web_app(gateway_host, args.tcp_port, store=store, settings=settings))
     try:
         await runner.setup()
         site = web.TCPSite(runner, args.web_host, args.web_port)

@@ -8,8 +8,8 @@ HANDLERS = {
     "users": rooms.on_users,
     "history": rooms.on_history,
     "dm": direct.on_dm,
+    "dm_history": direct.on_dm_history,
     "ai": assistant.on_ai,
     "ai_history": assistant.on_ai_history,
     "ai_reset": assistant.on_ai_reset,
 }
-

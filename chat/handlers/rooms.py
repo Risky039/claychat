@@ -16,6 +16,9 @@ async def on_message(server, peer, msg):
     if not valid_text(text):
         peer.send(packet("error", text="Message must contain 1-2000 characters"))
         return
+    if not server.msg_limiter.allow(peer.key):
+        peer.send(packet("error", text="Slow down: you are sending messages too quickly"))
+        return
     saved = await server.store.add_room_message(peer.room, peer.name, text.strip())
     server.broadcast(peer.room, packet("message", **saved))
 
@@ -48,4 +51,3 @@ async def on_history(server, peer, msg):
         peer.send(packet("error", text="History 'before' must be a positive message id"))
     else:
         await send_history(server, peer, room, before)
-

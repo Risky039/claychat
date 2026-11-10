@@ -12,6 +12,8 @@ class Peer:
         self.reader = reader
         self.writer = writer
         self.name = None
+        self.user_id = None
+        self.authenticated = False
         self.room = DEFAULT_ROOM
         self.outbox = asyncio.Queue(maxsize=OUTBOX_SIZE)
         self.sender = asyncio.create_task(self.write_loop())
@@ -29,6 +31,8 @@ class Peer:
         try:
             while True:
                 item = await self.outbox.get()
+                if item is None:
+                    break
                 self.writer.write(encode(item))
                 await self.writer.drain()
         except (ConnectionError, OSError):
@@ -46,4 +50,3 @@ class Peer:
     @property
     def closing(self):
         return self.writer.is_closing()
-

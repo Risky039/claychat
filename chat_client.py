@@ -22,6 +22,9 @@ def receive(sock):
                     room = item.get("room", "room")
                     for entry in item.get("messages", ()):
                         print(f"\n[{room}] {entry.get('username')}: {entry.get('text')}", flush=True)
+                elif kind == "dm_history":
+                    for entry in item.get("messages", ()):
+                        print(f"\n[DM] {entry.get('username')} -> {entry.get('to')}: {entry.get('text')}", flush=True)
                 elif kind == "presence":
                     print(f"\n* {item['username']} {item['action']}", flush=True)
                 elif kind == "ai_status":
@@ -44,6 +47,7 @@ def main():
     parser.add_argument("username")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--token", default="", help="Session token from /api/login or /api/register")
     args = parser.parse_args()
     with socket.create_connection((args.host, args.port), timeout=10) as sock:
         sock.settimeout(None)
@@ -52,7 +56,10 @@ def main():
         def send(**item):
             sock.sendall((json.dumps(item, ensure_ascii=False) + "\n").encode())
 
-        send(type="hello", username=args.username)
+        if args.token:
+            send(type="hello", username=args.username, token=args.token)
+        else:
+            send(type="hello", username=args.username)
         print("Commands: /join ROOM, /dm USER MESSAGE, /users, /ai PROMPT, /ai-history, /ai-reset, /quit. Plain text goes to the room.")
         while True:
             try:
