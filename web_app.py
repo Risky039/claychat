@@ -32,9 +32,15 @@ SESSION_MAX_AGE = 30 * 86400
 
 def _same_origin(request):
     origin = request.headers.get("Origin")
-    if origin and urlsplit(origin).netloc.lower() != request.host.lower():
-        return False
-    return True
+    if not origin:
+        return True
+    origin_host = urlsplit(origin).netloc.lower()
+    allowed = {request.host.lower()}
+    forwarded = request.headers.get("X-Forwarded-Host", "")
+    for part in forwarded.split(","):
+        if part.strip():
+            allowed.add(part.strip().lower())
+    return origin_host in allowed
 
 
 def _extract_token(request):
