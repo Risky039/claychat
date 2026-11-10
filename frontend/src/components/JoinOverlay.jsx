@@ -30,7 +30,7 @@ export default function JoinOverlay({ state, onJoin, onAuthenticate }) {
   return (
     <div className={`join-overlay${state.joined ? " hidden" : ""}`} aria-hidden={state.joined}>
       <form className="join-card clay-card" onSubmit={submit}>
-        <div className="join-decoration"><div className="join-logo"><Icon name="chat" /></div><div className="floating-spark">✦</div></div>
+        <div className="join-decoration"><div className="join-logo"><Icon name="chat" /></div></div>
         <span className="join-eyebrow">WELCOME TO CLAYCHAT</span>
         <h2>Come on in.<br /><em>Good chats await.</em></h2>
         <div className="join-tabs" role="tablist" aria-label="Entry mode">
