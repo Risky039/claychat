@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dayLabel, mergeMessages } from "./messages.js";
+import {
+  applyMessageDelete,
+  applyMessageUpdate,
+  applyReactionUpdate,
+  dayLabel,
+  mergeMessages,
+} from "./messages.js";
 
 const msg = (id) => ({ kind: "message", id, text: `m${id}` });
 const note = (text) => ({ kind: "system", text });
@@ -34,6 +40,19 @@ test("inputs are not mutated", () => {
   assert.deepEqual(incoming.map((e) => e.id), [3, 1]);
 });
 
+test("applyMessageUpdate, applyMessageDelete, and applyReactionUpdate are immutable", () => {
+  const list = [msg(1), msg(2)];
+  const edited = applyMessageUpdate(list, { id: 2, text: "edited", edited_at: "2026-11-10T09:00:00Z" });
+  assert.equal(edited[1].text, "edited");
+  assert.equal(list[1].text, "m2");
+
+  const reacted = applyReactionUpdate(edited, { id: 1, reactions: { "👍": ["alice"] } });
+  assert.deepEqual(reacted[0].reactions, { "👍": ["alice"] });
+
+  const afterDel = applyMessageDelete(reacted, { id: 1 });
+  assert.deepEqual(afterDel.map((e) => e.id), [2]);
+});
+
 test("dayLabel names today and yesterday and ignores missing times", () => {
   const now = new Date(2026, 10, 10, 9, 0);
   assert.equal(dayLabel(new Date(2026, 10, 10, 0, 5).toISOString(), now), "TODAY");
@@ -42,4 +61,3 @@ test("dayLabel names today and yesterday and ignores missing times", () => {
   assert.equal(dayLabel(undefined, now), "");
   assert.equal(dayLabel("not a date", now), "");
 });
-

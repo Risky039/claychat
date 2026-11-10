@@ -30,6 +30,7 @@ class ChatServer:
         self.hello_timeout = settings.hello_timeout
         self.idle_timeout = settings.idle_timeout
         self.msg_limiter = RateLimiter(rate=settings.msg_rate, capacity=settings.msg_burst)
+        self.typing_limiter = RateLimiter(rate=1.0, capacity=2.0)
 
     def broadcast(self, room, item, exclude=None):
         for peer in tuple(self.peers.values()):

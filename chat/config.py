@@ -23,6 +23,7 @@ class Settings:
     api_key: str = ""
     model: str = "muse-spark-1.3"
     db_path: str = str(PROJECT_DIR / "data" / "chat.db")
+    upload_dir: str = str(PROJECT_DIR / "data" / "uploads")
     history_limit: int = 50
     invite_code: str = ""
     hello_timeout: float = 10.0
@@ -36,6 +37,7 @@ class Settings:
             api_key=load_api_key(env),
             model=env.get("META_MODEL", cls.model),
             db_path=env.get("CHAT_DB_PATH", cls.db_path),
+            upload_dir=env.get("CHAT_UPLOAD_DIR", cls.upload_dir),
             history_limit=_positive_int(env.get("CHAT_HISTORY_LIMIT"), cls.history_limit, maximum=200),
             invite_code=env.get("CHAT_INVITE_CODE", "").strip(),
             hello_timeout=_positive_float(env.get("CHAT_HELLO_TIMEOUT"), cls.hello_timeout),

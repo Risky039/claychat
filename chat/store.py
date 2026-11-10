@@ -1,4 +1,4 @@
-"""SQLite persistence for chat messages, user accounts, and sessions.
+"""SQLite persistence for chat messages, user accounts, sessions, reactions, receipts, and attachments.
 
 All database work runs on one dedicated worker thread, so the asyncio loop never
 blocks on disk I/O and the single connection is never used concurrently.
@@ -50,6 +50,34 @@ MIGRATIONS = (
     );
     CREATE INDEX idx_sessions_user ON sessions (user_id);
     """,
+    """
+    CREATE TABLE attachments (
+        id TEXT PRIMARY KEY,
+        uploader TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        mime TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    ALTER TABLE messages ADD COLUMN attachment_id TEXT REFERENCES attachments(id);
+    CREATE TABLE reactions (
+        message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        username_lower TEXT NOT NULL,
+        username TEXT NOT NULL,
+        emoji TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (message_id, username_lower, emoji)
+    );
+    CREATE INDEX idx_reactions_msg ON reactions (message_id);
+    CREATE TABLE read_cursors (
+        scope TEXT NOT NULL,
+        username_lower TEXT NOT NULL,
+        username TEXT NOT NULL,
+        message_id INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (scope, username_lower)
+    );
+    """,
 )
 
 
@@ -58,12 +86,34 @@ def dm_key(first, second):
     return ":".join(sorted((first.lower(), second.lower())))
 
 
-def _room_row(row):
-    return {"id": row[0], "room": row[1], "username": row[2], "text": row[3], "time": row[4]}
+def _attachment_dict(row):
+    if not row or row[0] is None:
+        return None
+    return {
+        "id": row[0],
+        "name": row[1],
+        "mime": row[2],
+        "size": row[3],
+        "url": f"/api/uploads/{row[0]}",
+    }
 
 
-def _dm_row(row):
-    return {"id": row[0], "username": row[1], "to": row[2], "text": row[3], "time": row[4]}
+def _enrich_messages(conn, items):
+    if not items:
+        return items
+    ids = [item["id"] for item in items]
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"SELECT message_id, emoji, username FROM reactions WHERE message_id IN ({placeholders}) ORDER BY username_lower",
+        ids,
+    ).fetchall()
+    by_msg = {}
+    for msg_id, emoji, username in rows:
+        by_msg.setdefault(msg_id, {}).setdefault(emoji, []).append(username)
+    for item in items:
+        if item["id"] in by_msg:
+            item["reactions"] = by_msg[item["id"]]
+    return items
 
 
 class Store:
@@ -103,44 +153,256 @@ class Store:
             self._conn = None
         self._executor.shutdown(wait=True)
 
-    async def add_room_message(self, room, author, text):
+    async def create_attachment(self, att_id, uploader, filename, mime, size):
         def insert(conn):
             created = now_iso()
             with conn:
-                cursor = conn.execute(
-                    "INSERT INTO messages (room, author, text, created_at) VALUES (?, ?, ?, ?)",
-                    (room, author, text, created),
+                conn.execute(
+                    "INSERT INTO attachments (id, uploader, filename, mime, size, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (att_id, uploader, filename, mime, size, created),
                 )
-            return {"id": cursor.lastrowid, "room": room, "username": author, "text": text, "time": created}
+            return {
+                "id": att_id,
+                "name": filename,
+                "mime": mime,
+                "size": size,
+                "url": f"/api/uploads/{att_id}",
+            }
 
         return await self._run(insert)
 
-    async def add_dm(self, author, recipient, text):
+    async def get_attachment(self, att_id):
+        def select(conn):
+            row = conn.execute(
+                "SELECT id, filename, mime, size FROM attachments WHERE id = ?",
+                (att_id,),
+            ).fetchone()
+            return _attachment_dict(row)
+
+        return await self._run(select)
+
+    async def add_room_message(self, room, author, text, attachment_id=None):
         def insert(conn):
             created = now_iso()
+            att = None
+            if attachment_id is not None:
+                att_row = conn.execute(
+                    "SELECT id, filename, mime, size FROM attachments WHERE id = ?",
+                    (attachment_id,),
+                ).fetchone()
+                if att_row is None:
+                    raise ValueError("Attachment not found")
+                att = _attachment_dict(att_row)
             with conn:
                 cursor = conn.execute(
-                    "INSERT INTO messages (dm_key, author, recipient, text, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (dm_key(author, recipient), author, recipient, text, created),
+                    "INSERT INTO messages (room, author, text, created_at, attachment_id) VALUES (?, ?, ?, ?, ?)",
+                    (room, author, text, created, attachment_id),
                 )
-            return {"id": cursor.lastrowid, "username": author, "to": recipient, "text": text, "time": created}
+            result = {"id": cursor.lastrowid, "room": room, "username": author, "text": text, "time": created}
+            if att is not None:
+                result["attachment"] = att
+            return result
 
         return await self._run(insert)
+
+    async def add_dm(self, author, recipient, text, attachment_id=None):
+        def insert(conn):
+            created = now_iso()
+            att = None
+            if attachment_id is not None:
+                att_row = conn.execute(
+                    "SELECT id, filename, mime, size FROM attachments WHERE id = ?",
+                    (attachment_id,),
+                ).fetchone()
+                if att_row is None:
+                    raise ValueError("Attachment not found")
+                att = _attachment_dict(att_row)
+            with conn:
+                cursor = conn.execute(
+                    "INSERT INTO messages (dm_key, author, recipient, text, created_at, attachment_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    (dm_key(author, recipient), author, recipient, text, created, attachment_id),
+                )
+            result = {"id": cursor.lastrowid, "username": author, "to": recipient, "text": text, "time": created}
+            if att is not None:
+                result["attachment"] = att
+            return result
+
+        return await self._run(insert)
+
+    async def get_message(self, message_id):
+        def select(conn):
+            row = conn.execute(
+                "SELECT id, room, dm_key, author, recipient, text, created_at, edited_at, deleted_at "
+                "FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "id": row[0],
+                "room": row[1],
+                "dm_key": row[2],
+                "username": row[3],
+                "to": row[4],
+                "text": row[5],
+                "time": row[6],
+                "edited_at": row[7],
+                "deleted_at": row[8],
+            }
+
+        return await self._run(select)
+
+    async def edit_message(self, message_id, actor_username, new_text):
+        def update(conn):
+            row = conn.execute(
+                "SELECT id, room, author, recipient, deleted_at FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+            if row is None or row[4] is not None:
+                raise LookupError("Message not found")
+            if row[2].lower() != actor_username.lower():
+                raise PermissionError("Only the message author can edit this message")
+            edited = now_iso()
+            with conn:
+                conn.execute(
+                    "UPDATE messages SET text = ?, edited_at = ? WHERE id = ?",
+                    (new_text, edited, message_id),
+                )
+            result = {"id": row[0], "username": row[2], "text": new_text, "edited_at": edited}
+            if row[1] is not None:
+                result["room"] = row[1]
+            else:
+                result["to"] = row[3]
+            return result
+
+        return await self._run(update)
+
+    async def delete_message(self, message_id, actor_username):
+        def delete(conn):
+            row = conn.execute(
+                "SELECT id, room, author, recipient, deleted_at FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+            if row is None or row[4] is not None:
+                raise LookupError("Message not found")
+            if row[2].lower() != actor_username.lower():
+                raise PermissionError("Only the message author can delete this message")
+            deleted = now_iso()
+            with conn:
+                conn.execute(
+                    "UPDATE messages SET text = '', deleted_at = ? WHERE id = ?",
+                    (deleted, message_id),
+                )
+            result = {"id": row[0], "username": row[2], "deleted_at": deleted}
+            if row[1] is not None:
+                result["room"] = row[1]
+            else:
+                result["to"] = row[3]
+            return result
+
+        return await self._run(delete)
+
+    async def toggle_reaction(self, message_id, username, emoji):
+        def toggle(conn):
+            row = conn.execute(
+                "SELECT id, room, author, recipient, deleted_at FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+            if row is None or row[4] is not None:
+                raise LookupError("Message not found")
+            lower = username.lower()
+            existing = conn.execute(
+                "SELECT 1 FROM reactions WHERE message_id = ? AND username_lower = ? AND emoji = ?",
+                (message_id, lower, emoji),
+            ).fetchone()
+            with conn:
+                if existing:
+                    conn.execute(
+                        "DELETE FROM reactions WHERE message_id = ? AND username_lower = ? AND emoji = ?",
+                        (message_id, lower, emoji),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO reactions (message_id, username_lower, username, emoji, created_at) VALUES (?, ?, ?, ?, ?)",
+                        (message_id, lower, username, emoji, now_iso()),
+                    )
+            all_rows = conn.execute(
+                "SELECT emoji, username FROM reactions WHERE message_id = ? ORDER BY username_lower",
+                (message_id,),
+            ).fetchall()
+            reactions = {}
+            for em, uname in all_rows:
+                reactions.setdefault(em, []).append(uname)
+            result = {"id": row[0], "reactions": reactions}
+            if row[1] is not None:
+                result["room"] = row[1]
+            else:
+                result["username"] = row[2]
+                result["to"] = row[3]
+            return result
+
+        return await self._run(toggle)
+
+    async def mark_read(self, message_id, username):
+        def update(conn):
+            row = conn.execute(
+                "SELECT id, room, dm_key, author, recipient, deleted_at FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+            if row is None or row[5] is not None:
+                raise LookupError("Message not found")
+            scope = f"room:{row[1]}" if row[1] is not None else f"dm:{row[2]}"
+            lower = username.lower()
+            updated = now_iso()
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO read_cursors (scope, username_lower, username, message_id, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(scope, username_lower) DO UPDATE SET
+                        message_id = CASE WHEN excluded.message_id > read_cursors.message_id THEN excluded.message_id ELSE read_cursors.message_id END,
+                        updated_at = excluded.updated_at
+                    """,
+                    (scope, lower, username, message_id, updated),
+                )
+            result = {"id": row[0], "username": username}
+            if row[1] is not None:
+                result["room"] = row[1]
+            else:
+                result["author"] = row[3]
+                result["to"] = row[4]
+            return result
+
+        return await self._run(update)
 
     async def room_history(self, room, limit=50, before=None):
         """Return up to ``limit`` messages older than ``before`` (oldest first) and a has-more flag."""
 
         def select(conn):
-            query = "SELECT id, room, author, text, created_at FROM messages WHERE room = ? AND deleted_at IS NULL"
+            query = (
+                "SELECT m.id, m.room, m.author, m.text, m.created_at, m.edited_at, "
+                "a.id, a.filename, a.mime, a.size "
+                "FROM messages m LEFT JOIN attachments a ON a.id = m.attachment_id "
+                "WHERE m.room = ? AND m.deleted_at IS NULL"
+            )
             params = [room]
             if before is not None:
-                query += " AND id < ?"
+                query += " AND m.id < ?"
                 params.append(before)
-            query += " ORDER BY id DESC LIMIT ?"
+            query += " ORDER BY m.id DESC LIMIT ?"
             params.append(limit + 1)
             rows = conn.execute(query, params).fetchall()
             has_more = len(rows) > limit
-            return [_room_row(row) for row in reversed(rows[:limit])], has_more
+            items = []
+            for r in reversed(rows[:limit]):
+                item = {"id": r[0], "room": r[1], "username": r[2], "text": r[3], "time": r[4]}
+                if r[5] is not None:
+                    item["edited_at"] = r[5]
+                att = _attachment_dict(r[6:10])
+                if att is not None:
+                    item["attachment"] = att
+                items.append(item)
+            return _enrich_messages(conn, items), has_more
 
         return await self._run(select)
 
@@ -149,18 +411,29 @@ class Store:
 
         def select(conn):
             query = (
-                "SELECT id, author, recipient, text, created_at FROM messages "
-                "WHERE dm_key = ? AND deleted_at IS NULL"
+                "SELECT m.id, m.author, m.recipient, m.text, m.created_at, m.edited_at, "
+                "a.id, a.filename, a.mime, a.size "
+                "FROM messages m LEFT JOIN attachments a ON a.id = m.attachment_id "
+                "WHERE m.dm_key = ? AND m.deleted_at IS NULL"
             )
             params = [dm_key(user_a, user_b)]
             if before is not None:
-                query += " AND id < ?"
+                query += " AND m.id < ?"
                 params.append(before)
-            query += " ORDER BY id DESC LIMIT ?"
+            query += " ORDER BY m.id DESC LIMIT ?"
             params.append(limit + 1)
             rows = conn.execute(query, params).fetchall()
             has_more = len(rows) > limit
-            return [_dm_row(row) for row in reversed(rows[:limit])], has_more
+            items = []
+            for r in reversed(rows[:limit]):
+                item = {"id": r[0], "username": r[1], "to": r[2], "text": r[3], "time": r[4]}
+                if r[5] is not None:
+                    item["edited_at"] = r[5]
+                att = _attachment_dict(r[6:10])
+                if att is not None:
+                    item["attachment"] = att
+                items.append(item)
+            return _enrich_messages(conn, items), has_more
 
         return await self._run(select)
 

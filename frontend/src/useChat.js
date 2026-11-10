@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import { mergeMessages } from "./messages.js";
+import {
+  applyMessageDelete,
+  applyMessageUpdate,
+  applyReactionUpdate,
+  mergeMessages,
+} from "./messages.js";
 
 const initialState = {
   username: "",
@@ -20,6 +25,8 @@ const initialState = {
   roomLoadingOlder: {},
   dmHasMore: {},
   dmLoadingOlder: {},
+  typingByChannel: {},
+  readByMessage: {},
   users: [],
   aiMessages: [],
   aiPending: false,
@@ -40,6 +47,17 @@ function addSystem(state, text, room = state.currentRoom) {
   return { ...state, roomMessages: appendTo(state.roomMessages, room, { kind: "system", text, time: new Date().toISOString() }) };
 }
 
+function updateInAllChannels(map, fn) {
+  let changed = false;
+  const next = {};
+  for (const [key, list] of Object.entries(map)) {
+    const updated = fn(list);
+    if (updated !== list) changed = true;
+    next[key] = updated;
+  }
+  return changed ? next : map;
+}
+
 function reducer(state, action) {
   switch (action.type) {
     case "SESSION_INFO":
@@ -56,6 +74,7 @@ function reducer(state, action) {
         users: [],
         roomLoadingOlder: {},
         dmLoadingOlder: {},
+        typingByChannel: {},
         joinError: state.joinError || (state.joined ? "" : "Could not reach the chat server. Try again."),
       };
     case "JOIN_REJECTED":
@@ -66,6 +85,12 @@ function reducer(state, action) {
       return { ...state, events: [...state.events, { direction: "out", item: action.item, time: new Date().toISOString() }].slice(-80) };
     case "CLEAR_EVENTS":
       return { ...state, events: [] };
+    case "CLEAR_TYPING": {
+      const current = state.typingByChannel[action.channel] || [];
+      const filtered = current.filter((u) => u !== action.username);
+      if (filtered.length === current.length) return state;
+      return { ...state, typingByChannel: { ...state.typingByChannel, [action.channel]: filtered } };
+    }
     case "SELECT_ROOM": {
       const unread = { ...state.roomUnread };
       delete unread[action.room];
@@ -152,6 +177,41 @@ function reducer(state, action) {
             dmLoadingOlder: { ...next.dmLoadingOlder, [key]: false },
           };
         }
+        case "typing": {
+          const channel = item.room ? `room:${item.room.toLowerCase()}` : `dm:${(item.username || "").toLowerCase()}`;
+          const existing = next.typingByChannel[channel] || [];
+          if (existing.includes(item.username)) return next;
+          return {
+            ...next,
+            typingByChannel: { ...next.typingByChannel, [channel]: [...existing, item.username] },
+          };
+        }
+        case "message_updated":
+          return {
+            ...next,
+            roomMessages: updateInAllChannels(next.roomMessages, (list) => applyMessageUpdate(list, item)),
+            dmMessages: updateInAllChannels(next.dmMessages, (list) => applyMessageUpdate(list, item)),
+          };
+        case "message_deleted":
+          return {
+            ...next,
+            roomMessages: updateInAllChannels(next.roomMessages, (list) => applyMessageDelete(list, item)),
+            dmMessages: updateInAllChannels(next.dmMessages, (list) => applyMessageDelete(list, item)),
+          };
+        case "reactions_updated":
+          return {
+            ...next,
+            roomMessages: updateInAllChannels(next.roomMessages, (list) => applyReactionUpdate(list, item)),
+            dmMessages: updateInAllChannels(next.dmMessages, (list) => applyReactionUpdate(list, item)),
+          };
+        case "read_receipt": {
+          const readers = next.readByMessage[item.id] || [];
+          if (readers.includes(item.username)) return next;
+          return {
+            ...next,
+            readByMessage: { ...next.readByMessage, [item.id]: [...readers, item.username] },
+          };
+        }
         case "presence":
           return addSystem(next, `${item.username} ${item.action} the room.`);
         case "users":
@@ -184,6 +244,8 @@ export function useChat() {
   const stateRef = useRef(state);
   const socketRef = useRef(null);
   const timerRef = useRef(null);
+  const typingTimersRef = useRef({});
+  const lastTypingSentRef = useRef(0);
   const attemptsRef = useRef(0);
   const disposedRef = useRef(false);
   const allowReconnectRef = useRef(true);
@@ -197,7 +259,7 @@ export function useChat() {
     return true;
   }, []);
 
-  const connect = useCallback((username, useSession = false) => {
+  const connect = useCallback((username) => {
     clearTimeout(timerRef.current);
     if (socketRef.current) socketRef.current.close();
     dispatch({ type: "CONNECTING" });
@@ -207,7 +269,7 @@ export function useChat() {
 
     socket.addEventListener("open", () => {
       if (socketRef.current !== socket || disposedRef.current) return;
-      send(useSession ? { type: "hello", username } : { type: "hello", username });
+      send({ type: "hello", username });
     });
 
     socket.addEventListener("message", (event) => {
@@ -220,7 +282,6 @@ export function useChat() {
         return;
       }
       if (item.type === "error" && !stateRef.current.registered) {
-        // During an automatic reconnect, the previous TCP socket may still be closing; retry with backoff.
         if (stateRef.current.joined && item.text?.includes("already in use")) {
           socket.close();
           return;
@@ -231,7 +292,14 @@ export function useChat() {
         return;
       }
       dispatch({ type: "RECEIVE", item });
-      if (item.type === "welcome") {
+      if (item.type === "typing") {
+        const channel = item.room ? `room:${item.room.toLowerCase()}` : `dm:${(item.username || "").toLowerCase()}`;
+        const timerKey = `${channel}:${item.username}`;
+        clearTimeout(typingTimersRef.current[timerKey]);
+        typingTimersRef.current[timerKey] = setTimeout(() => {
+          dispatch({ type: "CLEAR_TYPING", channel, username: item.username });
+        }, 4000);
+      } else if (item.type === "welcome") {
         attemptsRef.current = 0;
         if (stateRef.current.currentRoom !== item.room) send({ type: "join", room: stateRef.current.currentRoom });
         else send({ type: "users" });
@@ -245,7 +313,7 @@ export function useChat() {
       dispatch({ type: "DISCONNECTED" });
       if (allowReconnectRef.current && stateRef.current.joined) {
         const delay = Math.min(15000, 1500 * Math.pow(1.6, attemptsRef.current++));
-        timerRef.current = setTimeout(() => connect(stateRef.current.username, stateRef.current.authenticated), delay);
+        timerRef.current = setTimeout(() => connect(stateRef.current.username), delay);
       }
     });
   }, [send]);
@@ -260,13 +328,14 @@ export function useChat() {
         if (info.authenticated && info.username) {
           allowReconnectRef.current = true;
           dispatch({ type: "JOIN_ATTEMPT", username: info.username });
-          connect(info.username, true);
+          connect(info.username);
         }
       })
       .catch(() => {});
     return () => {
       disposedRef.current = true;
       clearTimeout(timerRef.current);
+      for (const timer of Object.values(typingTimersRef.current)) clearTimeout(timer);
       socketRef.current?.close();
     };
   }, [connect]);
@@ -276,7 +345,7 @@ export function useChat() {
     attemptsRef.current = 0;
     dispatch({ type: "JOIN_ATTEMPT", username });
     window.localStorage.setItem("claychat-nickname", username);
-    connect(username, false);
+    connect(username);
   }, [connect]);
 
   const authenticate = useCallback(async (mode, { username, password, inviteCode }) => {
@@ -297,7 +366,7 @@ export function useChat() {
       allowReconnectRef.current = true;
       attemptsRef.current = 0;
       window.localStorage.setItem("claychat-nickname", data.username);
-      connect(data.username, true);
+      connect(data.username);
       return true;
     } catch {
       dispatch({ type: "JOIN_REJECTED", text: "Could not reach the authentication server." });
@@ -347,10 +416,38 @@ export function useChat() {
     if (send({ type: "history", room: target, before: oldest.id })) dispatch({ type: "HISTORY_REQUEST", room: target });
   }, [send]);
 
-  const sendMessage = useCallback((text) => {
+  const sendMessage = useCallback((text, attachmentId = null) => {
     const active = stateRef.current.active;
-    return active.type === "room" ? send({ type: "message", text }) : send({ type: "dm", to: active.id, text });
+    const payload = active.type === "room" ? { type: "message", text } : { type: "dm", to: active.id, text };
+    if (attachmentId) payload.attachment_id = attachmentId;
+    return send(payload);
   }, [send]);
+
+  const notifyTyping = useCallback(() => {
+    const now = Date.now();
+    if (now - lastTypingSentRef.current < 1500) return;
+    lastTypingSentRef.current = now;
+    const active = stateRef.current.active;
+    send(active.type === "room" ? { type: "typing" } : { type: "typing", to: active.id });
+  }, [send]);
+
+  const editMessage = useCallback((id, text) => send({ type: "edit", id, text }), [send]);
+  const deleteMessage = useCallback((id) => send({ type: "delete", id }), [send]);
+  const toggleReaction = useCallback((id, emoji) => send({ type: "react", id, emoji }), [send]);
+  const markRead = useCallback((id) => send({ type: "read", id }), [send]);
+
+  const uploadAttachment = useCallback(async (file) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    const res = await fetch("/api/uploads", {
+      method: "POST",
+      credentials: "same-origin",
+      body: form,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Upload failed");
+    return data;
+  }, []);
 
   const sendAi = useCallback((text) => {
     if (stateRef.current.aiPending) return false;
@@ -368,6 +465,12 @@ export function useChat() {
     selectDm,
     loadOlder,
     sendMessage,
+    notifyTyping,
+    editMessage,
+    deleteMessage,
+    toggleReaction,
+    markRead,
+    uploadAttachment,
     sendAi,
     showAiHistory: () => send({ type: "ai_history" }),
     resetAi: () => send({ type: "ai_reset" }),

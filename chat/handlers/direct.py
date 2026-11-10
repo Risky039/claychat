@@ -1,12 +1,23 @@
 """Direct messages between two users and authenticated DM history."""
 
-from chat.protocol import packet, valid_message_id, valid_name, valid_text
+from chat.protocol import MAX_TEXT, packet, valid_message_id, valid_name, valid_text
+from chat.uploads import valid_attachment_id
 
 
 async def on_dm(server, peer, msg):
     target = msg.get("to")
-    text = msg.get("text")
-    if not isinstance(target, str) or not valid_text(text):
+    text = msg.get("text", "")
+    attachment_id = msg.get("attachment_id")
+    if not isinstance(target, str):
+        peer.send(packet("error", text="DM needs a recipient and 1-2000 characters"))
+        return
+    if attachment_id is not None and not valid_attachment_id(attachment_id):
+        peer.send(packet("error", text="Invalid attachment id"))
+        return
+    if attachment_id is None and not valid_text(text):
+        peer.send(packet("error", text="DM needs a recipient and 1-2000 characters"))
+        return
+    if not isinstance(text, str) or len(text) > MAX_TEXT:
         peer.send(packet("error", text="DM needs a recipient and 1-2000 characters"))
         return
     if not server.msg_limiter.allow(peer.key):
@@ -16,7 +27,13 @@ async def on_dm(server, peer, msg):
     if recipient is None:
         peer.send(packet("error", text="Recipient is offline"))
         return
-    saved = await server.store.add_dm(peer.name, recipient.name, text.strip())
+    try:
+        saved = await server.store.add_dm(
+            peer.name, recipient.name, text.strip(), attachment_id=attachment_id
+        )
+    except ValueError:
+        peer.send(packet("error", text="Attachment not found"))
+        return
     item = packet("dm", **saved)
     recipient.send(item)
     if recipient is not peer:

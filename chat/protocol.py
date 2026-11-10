@@ -9,6 +9,7 @@ ROOM_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,29}$")
 MAX_LINE = 8192
 MAX_TEXT = 2000
 DEFAULT_ROOM = "lobby"
+ALLOWED_EMOJI = ("👍", "❤️", "😂", "🎉", "🚀", "👀", "🔥", "💡")
 
 ROOM_RULE = "Room must be 1-30 letters, digits, underscore or hyphen, starting with a letter"
 
@@ -41,3 +42,6 @@ def valid_name(value):
 def valid_message_id(value):
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
+
+def valid_emoji(value):
+    return isinstance(value, str) and value in ALLOWED_EMOJI

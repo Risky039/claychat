@@ -16,6 +16,13 @@ from chat.protocol import MAX_LINE, valid_name
 from chat.ratelimit import RateLimiter
 from chat.server import ChatServer
 from chat.store import Store
+from chat.uploads import (
+    MAX_UPLOAD_BYTES,
+    clean_filename,
+    detect_mime,
+    new_attachment_id,
+    valid_attachment_id,
+)
 
 DIST_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 SESSION_COOKIE = "claychat_session"
@@ -62,8 +69,10 @@ def create_web_app(tcp_host="127.0.0.1", tcp_port=8765, store=None, settings=Non
     settings = settings or Settings.from_env()
     owns_store = store is None
     store = store or Store(settings.db_path)
+    upload_dir = Path(settings.upload_dir).resolve()
     auth_limiter = RateLimiter(rate=0.2, capacity=8.0)
-    app = web.Application(client_max_size=MAX_LINE)
+    upload_limiter = RateLimiter(rate=0.2, capacity=5.0)
+    app = web.Application(client_max_size=MAX_UPLOAD_BYTES + 65536)
 
     if owns_store:
         async def _close_store(_app):
@@ -154,6 +163,67 @@ def create_web_app(tcp_host="127.0.0.1", tcp_port=8765, store=None, settings=Non
                 "invite_required": bool(settings.invite_code),
             }
         )
+
+    async def upload_file(request):
+        if not _same_origin(request):
+            raise web.HTTPForbidden(text="Cross-origin requests are not allowed")
+        if not upload_limiter.allow(_client_ip(request)):
+            return web.json_response({"error": "Upload rate limit reached; try again shortly"}, status=429)
+        filename = "attachment"
+        data = b""
+        if request.content_type.startswith("multipart/"):
+            reader = await request.multipart()
+            part = await reader.next()
+            if part is None:
+                return web.json_response({"error": "Missing file part"}, status=400)
+            filename = clean_filename(part.filename or "attachment")
+            chunks = []
+            total = 0
+            while True:
+                chunk = await part.read_chunk(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    return web.json_response({"error": "File exceeds 5 MB limit"}, status=413)
+                chunks.append(chunk)
+            data = b"".join(chunks)
+        else:
+            filename = clean_filename(request.headers.get("X-Filename", "attachment"))
+            data = await request.read()
+        try:
+            mime = detect_mime(data, filename)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+        token = _extract_token(request)
+        user = await store.user_by_token(token) if token else None
+        uploader = user["username"] if user else "guest"
+        att_id = new_attachment_id()
+
+        def _write_disk():
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            (upload_dir / att_id).write_bytes(data)
+
+        await asyncio.to_thread(_write_disk)
+        meta = await store.create_attachment(att_id, uploader, filename, mime, len(data))
+        return web.json_response(meta, status=201)
+
+    async def download_file(request):
+        att_id = request.match_info.get("id", "")
+        if not valid_attachment_id(att_id):
+            raise web.HTTPNotFound()
+        meta = await store.get_attachment(att_id)
+        target = (upload_dir / att_id).resolve()
+        if meta is None or not target.is_relative_to(upload_dir) or not target.is_file():
+            raise web.HTTPNotFound()
+        disposition = "inline" if meta["mime"].startswith("image/") else "attachment"
+        response = web.FileResponse(target)
+        response.headers["Content-Type"] = meta["mime"]
+        response.headers["Content-Disposition"] = f'{disposition}; filename="{clean_filename(meta["name"])}"'
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'"
+        return response
 
     async def asset(request):
         name = request.match_info.get("path", "index.html")
@@ -247,6 +317,8 @@ def create_web_app(tcp_host="127.0.0.1", tcp_port=8765, store=None, settings=Non
     app.router.add_post("/api/login", login)
     app.router.add_post("/api/logout", logout)
     app.router.add_get("/api/me", me)
+    app.router.add_post("/api/uploads", upload_file)
+    app.router.add_get("/api/uploads/{id}", download_file)
     app.router.add_get("/", asset)
     app.router.add_get("/healthz", health)
     app.router.add_get("/ws", websocket)
