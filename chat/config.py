@@ -1,7 +1,7 @@
 """Runtime settings read from the environment (and one local, Git-ignored key file)."""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -30,6 +30,7 @@ class Settings:
     idle_timeout: float = 300.0
     msg_rate: float = 5.0
     msg_burst: float = 10.0
+    database_url: str = field(default="", repr=False)
 
     @classmethod
     def from_env(cls, env=os.environ):
@@ -44,6 +45,7 @@ class Settings:
             idle_timeout=_positive_float(env.get("CHAT_IDLE_TIMEOUT"), cls.idle_timeout),
             msg_rate=_positive_float(env.get("CHAT_MSG_RATE"), cls.msg_rate),
             msg_burst=_positive_float(env.get("CHAT_MSG_BURST"), cls.msg_burst),
+            database_url=env.get("CHAT_DATABASE_URL", "").strip(),
         )
 
 

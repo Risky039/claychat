@@ -75,7 +75,7 @@ def _set_session_cookie(response, request, token):
 def create_web_app(tcp_host="127.0.0.1", tcp_port=8765, store=None, settings=None):
     settings = settings or Settings.from_env()
     owns_store = store is None
-    store = store or Store(settings.db_path)
+    store = store or Store(settings.db_path, database_url=settings.database_url)
     upload_dir = Path(settings.upload_dir).resolve()
     auth_limiter = RateLimiter(rate=0.2, capacity=8.0)
     upload_limiter = RateLimiter(rate=0.2, capacity=5.0)
@@ -354,18 +354,20 @@ async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     settings = Settings.from_env()
-    store = Store(settings.db_path)
+    store = Store(settings.db_path, database_url=settings.database_url)
     chat = ChatServer(store=store, settings=settings)
     tcp = await asyncio.start_server(chat.handle, args.tcp_host, args.tcp_port, limit=MAX_LINE)
     gateway_host = "127.0.0.1" if args.tcp_host in {"0.0.0.0", "::"} else args.tcp_host
     runner = web.AppRunner(create_web_app(gateway_host, args.tcp_port, store=store, settings=settings))
     try:
+        if settings.database_url:
+            await store.user_exists("__readyz__")
         await runner.setup()
         site = web.TCPSite(runner, args.web_host, args.web_port)
         await site.start()
         print(f"TCP chat: {args.tcp_host}:{args.tcp_port}", flush=True)
         print(f"Web interface: http://{args.web_host}:{args.web_port}", flush=True)
-        print(f"Message history: {settings.db_path}", flush=True)
+        print(f"Message history: {'PostgreSQL' if settings.database_url else settings.db_path}", flush=True)
         await asyncio.Event().wait()
     finally:
         await runner.cleanup()

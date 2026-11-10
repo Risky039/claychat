@@ -11,7 +11,7 @@ from chat.handlers.rooms import send_history
 from chat.peer import Peer
 from chat.protocol import MAX_LINE, packet, valid_name
 from chat.ratelimit import RateLimiter
-from chat.store import Store
+from chat.store import Store, StoreError
 
 log = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ class ChatServer:
         """Run a handler; storage faults are logged and reported without leaking details."""
         try:
             await operation
-        except sqlite3.Error:
+        except (sqlite3.Error, StoreError):
             log.exception("Storage error while serving %s", peer.name)
             peer.send(packet("error", text="The server could not complete that request"))
 

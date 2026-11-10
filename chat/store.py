@@ -1,4 +1,4 @@
-"""SQLite persistence for chat messages, user accounts, sessions, reactions, receipts, and attachments.
+"""SQLite or PostgreSQL persistence for chat data.
 
 All database work runs on one dedicated worker thread, so the asyncio loop never
 blocks on disk I/O and the single connection is never used concurrently.
@@ -16,7 +16,7 @@ from chat.protocol import now_iso
 # Dummy scrypt hash used when a username is not found to equalize login timing.
 _DUMMY_HASH = hash_password("timing-defense-placeholder-password")
 
-# Each entry upgrades the schema by one version (tracked in PRAGMA user_version).
+# Each entry upgrades the schema by one version.
 MIGRATIONS = (
     """
     CREATE TABLE messages (
@@ -116,9 +116,14 @@ def _enrich_messages(conn, items):
     return items
 
 
+class StoreError(RuntimeError):
+    """A database error safe to log without including connection details."""
+
+
 class Store:
-    def __init__(self, path=":memory:"):
+    def __init__(self, path=":memory:", *, database_url=""):
         self.path = str(path)
+        self._database_url = database_url
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chat-store")
         self._conn = None
 
@@ -127,11 +132,23 @@ class Store:
         return await loop.run_in_executor(self._executor, self._call, fn, args)
 
     def _call(self, fn, args):
-        if self._conn is None:
-            self._conn = self._connect()
-        return fn(self._conn, *args)
+        if self._database_url:
+            from chat import postgres
 
-    def _connect(self):
+            try:
+                if self._conn is None or self._conn.closed:
+                    self._conn = postgres.connect(self._database_url, MIGRATIONS)
+                with self._conn.transaction():
+                    return fn(self._conn, *args)
+            except postgres.psycopg.Error as error:
+                raise StoreError(f"PostgreSQL request failed ({type(error).__name__})") from None
+
+        if self._conn is None:
+            self._conn = self._connect_sqlite()
+        with self._conn:
+            return fn(self._conn, *args)
+
+    def _connect_sqlite(self):
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path, check_same_thread=False)
@@ -145,22 +162,18 @@ class Store:
         return conn
 
     async def close(self):
-        def shutdown(conn):
-            conn.close()
-
         if self._conn is not None:
-            await self._run(shutdown)
+            await asyncio.get_running_loop().run_in_executor(self._executor, self._conn.close)
             self._conn = None
         self._executor.shutdown(wait=True)
 
     async def create_attachment(self, att_id, uploader, filename, mime, size):
         def insert(conn):
             created = now_iso()
-            with conn:
-                conn.execute(
-                    "INSERT INTO attachments (id, uploader, filename, mime, size, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (att_id, uploader, filename, mime, size, created),
-                )
+            conn.execute(
+                "INSERT INTO attachments (id, uploader, filename, mime, size, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (att_id, uploader, filename, mime, size, created),
+            )
             return {
                 "id": att_id,
                 "name": filename,
@@ -193,12 +206,11 @@ class Store:
                 if att_row is None:
                     raise ValueError("Attachment not found")
                 att = _attachment_dict(att_row)
-            with conn:
-                cursor = conn.execute(
-                    "INSERT INTO messages (room, author, text, created_at, attachment_id) VALUES (?, ?, ?, ?, ?)",
-                    (room, author, text, created, attachment_id),
-                )
-            result = {"id": cursor.lastrowid, "room": room, "username": author, "text": text, "time": created}
+            message_id = conn.execute(
+                "INSERT INTO messages (room, author, text, created_at, attachment_id) VALUES (?, ?, ?, ?, ?) RETURNING id",
+                (room, author, text, created, attachment_id),
+            ).fetchone()[0]
+            result = {"id": message_id, "room": room, "username": author, "text": text, "time": created}
             if att is not None:
                 result["attachment"] = att
             return result
@@ -217,12 +229,12 @@ class Store:
                 if att_row is None:
                     raise ValueError("Attachment not found")
                 att = _attachment_dict(att_row)
-            with conn:
-                cursor = conn.execute(
-                    "INSERT INTO messages (dm_key, author, recipient, text, created_at, attachment_id) VALUES (?, ?, ?, ?, ?, ?)",
-                    (dm_key(author, recipient), author, recipient, text, created, attachment_id),
-                )
-            result = {"id": cursor.lastrowid, "username": author, "to": recipient, "text": text, "time": created}
+            message_id = conn.execute(
+                "INSERT INTO messages (dm_key, author, recipient, text, created_at, attachment_id) "
+                "VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+                (dm_key(author, recipient), author, recipient, text, created, attachment_id),
+            ).fetchone()[0]
+            result = {"id": message_id, "username": author, "to": recipient, "text": text, "time": created}
             if att is not None:
                 result["attachment"] = att
             return result
@@ -252,22 +264,25 @@ class Store:
 
         return await self._run(select)
 
+    def _active_message_for_update(self, conn, message_id):
+        query = "SELECT id, room, author, recipient FROM messages WHERE id = ? AND deleted_at IS NULL"
+        if self._database_url:
+            query += " FOR UPDATE"
+        row = conn.execute(query, (message_id,)).fetchone()
+        if row is None:
+            raise LookupError("Message not found")
+        return row
+
     async def edit_message(self, message_id, actor_username, new_text):
         def update(conn):
-            row = conn.execute(
-                "SELECT id, room, author, recipient, deleted_at FROM messages WHERE id = ?",
-                (message_id,),
-            ).fetchone()
-            if row is None or row[4] is not None:
-                raise LookupError("Message not found")
+            row = self._active_message_for_update(conn, message_id)
             if row[2].lower() != actor_username.lower():
                 raise PermissionError("Only the message author can edit this message")
             edited = now_iso()
-            with conn:
-                conn.execute(
-                    "UPDATE messages SET text = ?, edited_at = ? WHERE id = ?",
-                    (new_text, edited, message_id),
-                )
+            conn.execute(
+                "UPDATE messages SET text = ?, edited_at = ? WHERE id = ?",
+                (new_text, edited, message_id),
+            )
             result = {"id": row[0], "username": row[2], "text": new_text, "edited_at": edited}
             if row[1] is not None:
                 result["room"] = row[1]
@@ -279,20 +294,14 @@ class Store:
 
     async def delete_message(self, message_id, actor_username):
         def delete(conn):
-            row = conn.execute(
-                "SELECT id, room, author, recipient, deleted_at FROM messages WHERE id = ?",
-                (message_id,),
-            ).fetchone()
-            if row is None or row[4] is not None:
-                raise LookupError("Message not found")
+            row = self._active_message_for_update(conn, message_id)
             if row[2].lower() != actor_username.lower():
                 raise PermissionError("Only the message author can delete this message")
             deleted = now_iso()
-            with conn:
-                conn.execute(
-                    "UPDATE messages SET text = '', deleted_at = ? WHERE id = ?",
-                    (deleted, message_id),
-                )
+            conn.execute(
+                "UPDATE messages SET text = '', deleted_at = ? WHERE id = ?",
+                (deleted, message_id),
+            )
             result = {"id": row[0], "username": row[2], "deleted_at": deleted}
             if row[1] is not None:
                 result["room"] = row[1]
@@ -304,28 +313,22 @@ class Store:
 
     async def toggle_reaction(self, message_id, username, emoji):
         def toggle(conn):
-            row = conn.execute(
-                "SELECT id, room, author, recipient, deleted_at FROM messages WHERE id = ?",
-                (message_id,),
-            ).fetchone()
-            if row is None or row[4] is not None:
-                raise LookupError("Message not found")
+            row = self._active_message_for_update(conn, message_id)
             lower = username.lower()
             existing = conn.execute(
                 "SELECT 1 FROM reactions WHERE message_id = ? AND username_lower = ? AND emoji = ?",
                 (message_id, lower, emoji),
             ).fetchone()
-            with conn:
-                if existing:
-                    conn.execute(
-                        "DELETE FROM reactions WHERE message_id = ? AND username_lower = ? AND emoji = ?",
-                        (message_id, lower, emoji),
-                    )
-                else:
-                    conn.execute(
-                        "INSERT INTO reactions (message_id, username_lower, username, emoji, created_at) VALUES (?, ?, ?, ?, ?)",
-                        (message_id, lower, username, emoji, now_iso()),
-                    )
+            if existing:
+                conn.execute(
+                    "DELETE FROM reactions WHERE message_id = ? AND username_lower = ? AND emoji = ?",
+                    (message_id, lower, emoji),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO reactions (message_id, username_lower, username, emoji, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (message_id, lower, username, emoji, now_iso()),
+                )
             all_rows = conn.execute(
                 "SELECT emoji, username FROM reactions WHERE message_id = ? ORDER BY username_lower",
                 (message_id,),
@@ -354,17 +357,16 @@ class Store:
             scope = f"room:{row[1]}" if row[1] is not None else f"dm:{row[2]}"
             lower = username.lower()
             updated = now_iso()
-            with conn:
-                conn.execute(
-                    """
-                    INSERT INTO read_cursors (scope, username_lower, username, message_id, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(scope, username_lower) DO UPDATE SET
-                        message_id = CASE WHEN excluded.message_id > read_cursors.message_id THEN excluded.message_id ELSE read_cursors.message_id END,
-                        updated_at = excluded.updated_at
-                    """,
-                    (scope, lower, username, message_id, updated),
-                )
+            conn.execute(
+                """
+                INSERT INTO read_cursors (scope, username_lower, username, message_id, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(scope, username_lower) DO UPDATE SET
+                    message_id = CASE WHEN excluded.message_id > read_cursors.message_id THEN excluded.message_id ELSE read_cursors.message_id END,
+                    updated_at = excluded.updated_at
+                """,
+                (scope, lower, username, message_id, updated),
+            )
             result = {"id": row[0], "username": username}
             if row[1] is not None:
                 result["room"] = row[1]
@@ -442,15 +444,14 @@ class Store:
 
         def insert(conn):
             created = now_iso()
-            try:
-                with conn:
-                    cursor = conn.execute(
-                        "INSERT INTO users (username, username_lower, password_hash, created_at) VALUES (?, ?, ?, ?)",
-                        (username, username.lower(), pw_hash, created),
-                    )
-            except sqlite3.IntegrityError as exc:
-                raise ValueError("Username is already registered") from exc
-            return {"id": cursor.lastrowid, "username": username, "created_at": created}
+            row = conn.execute(
+                "INSERT INTO users (username, username_lower, password_hash, created_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (username_lower) DO NOTHING RETURNING id",
+                (username, username.lower(), pw_hash, created),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Username is already registered")
+            return {"id": row[0], "username": username, "created_at": created}
 
         return await self._run(insert)
 
@@ -483,11 +484,10 @@ class Store:
         def insert(conn):
             now = datetime.now(timezone.utc)
             expires = (now + timedelta(days=ttl_days)).isoformat()
-            with conn:
-                conn.execute(
-                    "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-                    (digest, user_id, now.isoformat(), expires),
-                )
+            conn.execute(
+                "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+                (digest, user_id, now.isoformat(), expires),
+            )
             return token
 
         return await self._run(insert)
@@ -520,7 +520,6 @@ class Store:
             return
 
         def delete(conn):
-            with conn:
-                conn.execute("DELETE FROM sessions WHERE token_hash = ?", (digest,))
+            conn.execute("DELETE FROM sessions WHERE token_hash = ?", (digest,))
 
         await self._run(delete)

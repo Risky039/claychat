@@ -89,6 +89,16 @@ It writes `evidence/remote-demo.json` only after both users have received both m
 - **Richer chat (`chat/handlers/rooms.py`, `chat/uploads.py`):** Live typing indicators (`typing`), author-only message editing (`edit` -> `message_updated`) and soft deletion (`delete` -> `message_deleted`), 8-emoji reaction toggles (`react` -> `reactions_updated`), read receipts (`read` -> `read_receipt`), and 5 MB magic-byte validated image/file attachments (`POST /api/uploads` & `GET /api/uploads/{id}`).
 - **Smarter AI (`chat/ai.py`):** Token-by-token Server-Sent Events streaming (`stream: true` -> `ai_delta` chunks), shared room mentions (`@ai` or `@chunky` in a room message), and private room summaries (`summarize` or the **TL;DR** button in the Chunky panel).
 
+## Supabase Postgres on Render
+
+ClayChat can store accounts, sessions, chat history, reactions, and read receipts in a private `claychat` schema on PostgreSQL. The backend creates and updates the schema on startup.
+
+1. In Supabase, open **Connect → Session pooler** and copy the Postgres URI. Replace the password placeholder with the project's database password, URL-encoding any reserved characters in it.
+2. In the Render service's **Environment** settings, set `CHAT_DATABASE_URL` to that URI. Store the value there as a secret and deploy the new build. The application does not use Supabase publishable or secret API keys.
+3. Confirm that `/readyz` returns HTTP 200. The startup log identifies the storage backend without printing the connection URI.
+
+An unset `CHAT_DATABASE_URL` keeps the SQLite setup for local use. A configured Postgres connection failure stops startup. Switching backends does not import old SQLite records. Uploaded file contents still use `CHAT_UPLOAD_DIR`, so they need their own durable storage if they must survive Render redeploys.
+
 ## Docker & Caddy HTTPS deployment
 
 Run the full stack (non-root Python/React container + Caddy automatic TLS reverse proxy + persistent volume for SQLite and uploads):
