@@ -248,6 +248,16 @@ def create_web_app(tcp_host="127.0.0.1", tcp_port=8765, store=None, settings=Non
             return web.json_response({"status": "unavailable"}, status=503)
         return web.json_response({"status": "ok", "tcp_port": tcp_port})
 
+    async def ready(request):
+        try:
+            await store.user_exists("__readyz__")
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(tcp_host, tcp_port), 2)
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            return web.json_response({"status": "not_ready"}, status=503)
+        return web.json_response({"status": "ready", "tcp_port": tcp_port})
+
     async def websocket(request):
         if not _same_origin(request):
             raise web.HTTPForbidden(text="Cross-origin WebSocket connections are not allowed")
@@ -321,6 +331,7 @@ def create_web_app(tcp_host="127.0.0.1", tcp_port=8765, store=None, settings=Non
     app.router.add_get("/api/uploads/{id}", download_file)
     app.router.add_get("/", asset)
     app.router.add_get("/healthz", health)
+    app.router.add_get("/readyz", ready)
     app.router.add_get("/ws", websocket)
     app.router.add_get("/{path:.*}", asset)
     return app

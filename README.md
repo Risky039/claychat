@@ -70,16 +70,34 @@ TCP is a byte stream, so the newline is the application framing rule. A single `
 ## Verify
 
 ```sh
-python -m unittest -v test_chat test_web_app
+cd frontend && npm test && npm run build && cd ..
+python -m unittest -v test_store test_history test_auth test_rich_chat test_smarter_ai test_chat test_web_app
 ```
 
-The eight tests cover two concurrent TCP users, direct messaging, room switching, duplicate names, invalid JSON, disconnect cleanup, private multi-turn AI context, reset during an active request, API failures, two WebSocket clients exchanging messages through TCP, and cross-origin WebSocket rejection. For a live server, run:
+The test suites cover SQLite WAL persistence and schema migrations, room and DM history pagination, `scrypt` password hashing and session tokens, rate limiting and connection timeouts, typing indicators, message edit/delete permissions, emoji reactions, read receipts, magic-byte validated file uploads, SSE streaming AI replies, `@ai` room mentions, `/summarize`, two concurrent TCP users, and WebSocket gateway bridging. For a live server, run:
 
 ```sh
 python smoke_remote.py SERVER_PUBLIC_IP --port 8765
 ```
 
 It writes `evidence/remote-demo.json` only after both users have received both messages. See [REPORT.md](REPORT.md) for transport analysis and deployment status.
+
+## Expanded product features
+
+- **Modular `chat/` package & SQLite WAL storage (`chat/store.py`):** Every message receives an integer `id`. Joining a room delivers recent history (`history`), and clients can page backward with `{"type":"history","room":"...","before":id}`.
+- **Accounts, sessions & security (`chat/auth.py`, `chat/ratelimit.py`):** Optional account registration (`POST /api/register`), sign-in (`POST /api/login`), and logout (`POST /api/logout`) using `hashlib.scrypt` and `HttpOnly; SameSite=Lax` session cookies (`claychat_session`). Registered nicknames cannot be impersonated by guests, and authenticated users unlock persistent DM history (`dm_history`). Set `CHAT_INVITE_CODE` to require an invite code on sign-up. Includes token-bucket rate limiting and hello/idle socket timeouts.
+- **Richer chat (`chat/handlers/rooms.py`, `chat/uploads.py`):** Live typing indicators (`typing`), author-only message editing (`edit` -> `message_updated`) and soft deletion (`delete` -> `message_deleted`), 8-emoji reaction toggles (`react` -> `reactions_updated`), read receipts (`read` -> `read_receipt`), and 5 MB magic-byte validated image/file attachments (`POST /api/uploads` & `GET /api/uploads/{id}`).
+- **Smarter AI (`chat/ai.py`):** Token-by-token Server-Sent Events streaming (`stream: true` -> `ai_delta` chunks), shared room mentions (`@ai` or `@chunky` in a room message), and private room summaries (`summarize` or the **TL;DR** button in the Chunky panel).
+
+## Docker & Caddy HTTPS deployment
+
+Run the full stack (non-root Python/React container + Caddy automatic TLS reverse proxy + persistent volume for SQLite and uploads):
+
+```sh
+CHAT_DOMAIN=chat.example.com MODEL_API_KEY=your_key docker compose up -d --build
+```
+
+Health and readiness probes are exposed at `/healthz` and `/readyz`.
 
 ## AWS Lightsail deployment
 

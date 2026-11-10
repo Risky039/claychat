@@ -40,7 +40,7 @@ export default function App() {
       <div className="app-shell">
         <Sidebar state={chat.state} open={mobilePanel === "sidebar"} onClose={() => setMobilePanel(null)} onJoinRoom={joinRoom} onSelectDm={selectDm} onSignOut={chat.signOut} />
         <Conversation state={chat.state} onSend={chat.sendMessage} onNotifyTyping={chat.notifyTyping} onEdit={chat.editMessage} onDelete={chat.deleteMessage} onReact={chat.toggleReaction} onMarkRead={chat.markRead} onUpload={chat.uploadAttachment} onLoadOlder={chat.loadOlder} onOpenNav={() => setMobilePanel("sidebar")} onOpenAi={() => setMobilePanel("ai")} onOpenTransport={() => setTransportOpen(true)} />
-        <AiPanel state={chat.state} open={mobilePanel === "ai"} onClose={() => setMobilePanel(null)} onSend={chat.sendAi} onHistory={chat.showAiHistory} onReset={chat.resetAi} />
+        <AiPanel state={chat.state} open={mobilePanel === "ai"} onClose={() => setMobilePanel(null)} onSend={chat.sendAi} onSummarize={chat.summarizeRoom} onHistory={chat.showAiHistory} onReset={chat.resetAi} />
       </div>
       <TransportDrawer open={transportOpen} events={chat.state.events} onClose={() => setTransportOpen(false)} onClear={chat.clearEvents} />
       {mobilePanel ? <div className="mobile-backdrop" onClick={() => setMobilePanel(null)} /> : null}

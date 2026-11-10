@@ -218,8 +218,24 @@ function reducer(state, action) {
           return { ...next, users: item.usernames || [] };
         case "ai_status":
           return { ...next, aiPending: item.state === "thinking" };
-        case "ai":
-          return { ...next, aiPending: false, aiMessages: [...next.aiMessages, { role: "assistant", content: item.text, time: item.time }] };
+        case "ai_delta": {
+          const list = [...next.aiMessages];
+          const last = list[list.length - 1];
+          if (last && last.role === "assistant" && last.request_id === item.request_id) {
+            list[list.length - 1] = { ...last, content: (last.content || "") + (item.delta || "") };
+          } else {
+            list.push({ role: "assistant", content: item.delta || "", request_id: item.request_id, streaming: true });
+          }
+          return { ...next, aiMessages: list };
+        }
+        case "ai": {
+          const list = [...next.aiMessages];
+          const idx = item.request_id ? list.findIndex((m) => m.request_id === item.request_id) : -1;
+          const entry = { role: "assistant", content: item.text, time: item.time, kind: item.kind, room: item.room };
+          if (idx >= 0) list[idx] = entry;
+          else list.push(entry);
+          return { ...next, aiPending: false, aiMessages: list };
+        }
         case "ai_history":
           return { ...next, aiMessages: (item.messages || []).map((entry) => ({ ...entry })) };
         case "ai_reset":
@@ -451,8 +467,16 @@ export function useChat() {
 
   const sendAi = useCallback((text) => {
     if (stateRef.current.aiPending) return false;
-    if (!send({ type: "ai", text })) return false;
+    if (!send({ type: "ai", text, stream: true })) return false;
     dispatch({ type: "AI_PROMPT", text });
+    return true;
+  }, [send]);
+
+  const summarizeRoom = useCallback((count = 30) => {
+    if (stateRef.current.aiPending) return false;
+    const room = stateRef.current.currentRoom;
+    if (!send({ type: "summarize", room, count })) return false;
+    dispatch({ type: "AI_PROMPT", text: `Summarize #${room}` });
     return true;
   }, [send]);
 
@@ -472,6 +496,7 @@ export function useChat() {
     markRead,
     uploadAttachment,
     sendAi,
+    summarizeRoom,
     showAiHistory: () => send({ type: "ai_history" }),
     resetAi: () => send({ type: "ai_reset" }),
     clearEvents: () => dispatch({ type: "CLEAR_EVENTS" }),

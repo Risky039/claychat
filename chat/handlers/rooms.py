@@ -1,5 +1,8 @@
 """Room features: messages, joining, member lists, stored history, typing, edits, deletes, reactions, and read receipts."""
 
+import asyncio
+
+from chat import ai
 from chat.protocol import (
     MAX_TEXT,
     ROOM_RULE,
@@ -43,6 +46,9 @@ async def on_message(server, peer, msg):
         peer.send(packet("error", text="Attachment not found"))
         return
     server.broadcast(peer.room, packet("message", **saved))
+    mention_prompt = ai.extract_room_mention(text)
+    if mention_prompt:
+        asyncio.create_task(ai.room_reply(server, peer, peer.room, mention_prompt))
 
 
 async def on_join(server, peer, msg):

@@ -48,6 +48,8 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
                     self.assertGreater(len(await asset.read()), 100)
         async with self.session.get(self.base + "/healthz") as response:
             self.assertEqual((await response.json())["status"], "ok")
+        async with self.session.get(self.base + "/readyz") as response:
+            self.assertEqual((await response.json())["status"], "ready")
 
         alice = await self.session.ws_connect(self.base + "/ws")
         bob = await self.session.ws_connect(self.base + "/ws")

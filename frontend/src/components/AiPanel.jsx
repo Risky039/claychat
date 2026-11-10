@@ -10,7 +10,7 @@ function MarkdownText({ text }) {
   });
 }
 
-export default function AiPanel({ state, open, onClose, onSend, onHistory, onReset }) {
+export default function AiPanel({ state, open, onClose, onSend, onSummarize, onHistory, onReset }) {
   const [draft, setDraft] = useState("");
   const feedRef = useRef(null);
   const inputRef = useRef(null);
@@ -32,7 +32,7 @@ export default function AiPanel({ state, open, onClose, onSend, onHistory, onRes
   return (
     <aside className={`ai-panel clay-card${open ? " open" : ""}`} aria-label="Chunky assistant">
       <header className="ai-header"><div className="ai-orb" aria-hidden="true"><Icon name="spark" /></div><div className="ai-heading"><h2>Chunky</h2><p>Your private thinking space</p></div><button className="icon-button ai-mobile-close" type="button" onClick={onClose} aria-label="Close Chunky"><Icon name="close" /></button></header>
-      <div className="ai-toolbar"><span className="ai-private"><span className="tiny-lock">●</span> Only you can see this chat</span><div><button className="text-icon-button" type="button" onClick={onHistory} title="Show AI history" aria-label="Show AI history"><Icon name="clock" /></button><button className="text-icon-button" type="button" onClick={onReset} title="New AI conversation" aria-label="New AI conversation"><Icon name="refresh" /></button></div></div>
+      <div className="ai-toolbar"><span className="ai-private"><span className="tiny-lock">●</span> Private · or type <code>@ai</code> in room</span><div>{onSummarize ? <button className="text-icon-button" type="button" onClick={() => ready && onSummarize()} disabled={!ready} title={`Summarize #${state.currentRoom}`} aria-label="Summarize current room">TL;DR</button> : null}<button className="text-icon-button" type="button" onClick={onHistory} title="Show AI history" aria-label="Show AI history"><Icon name="clock" /></button><button className="text-icon-button" type="button" onClick={onReset} title="New AI conversation" aria-label="New AI conversation"><Icon name="refresh" /></button></div></div>
       <div className="ai-feed" ref={feedRef} role="log" aria-live="polite" aria-relevant="additions">
         {!state.aiMessages.length && !state.aiPending ? <div className="ai-welcome"><div className="ai-welcome-icon"><Icon name="spark" /></div><h3>Ideas, answers, and a little magic.</h3><p>Ask a question or pick a prompt below. Your conversation stays private.</p><div className="suggestions"><button type="button" className="suggestion" onClick={() => submit("Explain how TCP makes real-time chat reliable.")}>Explain TCP simply <Icon name="arrow" /></button><button type="button" className="suggestion" onClick={() => submit("Give me three creative icebreakers for a group chat.")}>Give me an icebreaker <Icon name="arrow" /></button></div></div> : state.aiMessages.map((item, index) => <div className={`ai-message ${item.role === "user" ? "user" : item.role === "error" ? "error" : "assistant"}`} key={index}><div className="ai-label">{item.role === "user" ? "YOU" : item.role === "error" ? "NOTICE" : "CHUNKY"}</div><div className="ai-bubble">{item.role === "assistant" ? <MarkdownText text={item.content} /> : item.content}</div></div>)}
         {state.aiPending ? <div className="ai-message assistant"><div className="ai-label">CHUNKY</div><div className="ai-bubble"><div className="ai-thinking"><i /><i /><i /></div></div></div> : null}

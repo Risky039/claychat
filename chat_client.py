@@ -29,6 +29,8 @@ def receive(sock):
                     print(f"\n* {item['username']} {item['action']}", flush=True)
                 elif kind == "ai_status":
                     print("\n[AI] Thinking...", flush=True)
+                elif kind == "ai_delta":
+                    print(item.get("delta", ""), end="", flush=True)
                 elif kind == "ai_history":
                     print(f"\n[AI] {item['turns']} saved turns in this connection:", flush=True)
                     for entry in item["messages"]:
@@ -81,8 +83,10 @@ def main():
                 send(type="ai_history")
             elif line == "/ai-reset":
                 send(type="ai_reset")
+            elif line == "/summarize":
+                send(type="summarize", count=30)
             elif line.startswith("/ai "):
-                send(type="ai", text=line[4:])
+                send(type="ai", text=line[4:], stream=True)
             elif line:
                 send(type="message", text=line)
 

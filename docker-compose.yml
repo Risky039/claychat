@@ -1,0 +1,34 @@
+services:
+  claychat:
+    build: .
+    restart: unless-stopped
+    environment:
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      META_MODEL: ${META_MODEL:-muse-spark-1.3}
+      CHAT_INVITE_CODE: ${CHAT_INVITE_CODE:-}
+      CHAT_DB_PATH: /data/chat.db
+      CHAT_UPLOAD_DIR: /data/uploads
+    volumes:
+      - claychat_data:/data
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - claychat
+    environment:
+      CHAT_DOMAIN: ${CHAT_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  claychat_data:
+  caddy_data:
+  caddy_config:

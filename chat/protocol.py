@@ -18,9 +18,9 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-def packet(kind, **fields):
+def packet(_kind, **fields):
     """Build an outgoing frame. Explicit fields (including ``time``) win over defaults."""
-    return {"type": kind, "time": now_iso(), **fields}
+    return {"type": _kind, "time": now_iso(), **fields}
 
 
 def encode(item):

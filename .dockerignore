@@ -1,0 +1,13 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+.env
+*.pem
+*.key
+deployment-private
+data
+evidence
+frontend/node_modules
+frontend/.npm-cache
+frontend/dist
