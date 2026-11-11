@@ -292,7 +292,7 @@ class UploadGatewayTest(unittest.IsolatedAsyncioTestCase):
         await self.store.create_attachment(corrupt_id, "alice", "corrupt.png", "image/png", len(TINY_PNG))
         directory = Path(self.settings.upload_dir)
         directory.mkdir(parents=True)
-        (directory / corrupt_id).write_bytes(b"truncated")
+        (directory / corrupt_id).write_bytes(b"\0" * len(TINY_PNG))
         await preserve_legacy_uploads(self.store, directory)
         self.assertIsNone((await self.store.get_attachment(att_id, include_content=True))["content"])
         self.assertIsNone((await self.store.get_attachment(corrupt_id, include_content=True))["content"])

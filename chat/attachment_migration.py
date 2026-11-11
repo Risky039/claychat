@@ -29,10 +29,19 @@ async def preserve_legacy_uploads(store, upload_dir):
             log.warning("Could not read a legacy upload (%s)", type(error).__name__)
             missing += 1
             continue
-        if len(content) != attachment["size"] or detect_mime(content, attachment["name"]) != attachment["mime"]:
+        if not _matches_attachment(content, attachment):
             log.warning("A legacy upload failed its integrity check")
             missing += 1
             continue
         await store.preserve_attachment(att_id, content)
         preserved += 1
     log.info("Upload migration preserved %s files; %s previous files were unavailable", preserved, missing)
+
+
+def _matches_attachment(content, attachment):
+    if len(content) != attachment["size"]:
+        return False
+    try:
+        return detect_mime(content, attachment["name"]) == attachment["mime"]
+    except ValueError:
+        return False
