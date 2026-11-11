@@ -271,29 +271,31 @@ class UploadGatewayTest(unittest.IsolatedAsyncioTestCase):
         finally:
             await ws.close()
 
-    async def test_legacy_upload_is_preserved_from_the_previous_instance(self):
+    async def test_legacy_upload_is_preserved_from_local_disk(self):
         att_id = "a" * 24
         directory = Path(self.settings.upload_dir)
         directory.mkdir(parents=True)
         legacy_file = directory / att_id
         legacy_file.write_bytes(TINY_PNG)
         await self.store.create_attachment(att_id, "alice", "old.png", "image/png", len(TINY_PNG))
-        # Use an empty local directory to exercise transfer over HTTP.
-        await preserve_legacy_uploads(self.store, directory / "empty", self.base)
+        await preserve_legacy_uploads(self.store, directory)
         legacy_file.unlink()
         async with self.session.get(self.base + f"/api/uploads/{att_id}") as response:
             self.assertEqual(response.status, 200)
             self.assertEqual(await response.read(), TINY_PNG)
         self.assertEqual(await self.store.legacy_attachments(), [])
 
-    async def test_unavailable_previous_instance_blocks_upload_migration(self):
+    async def test_unavailable_legacy_uploads_do_not_block_migration(self):
         att_id = "b" * 24
+        corrupt_id = "c" * 24
         await self.store.create_attachment(att_id, "alice", "old.png", "image/png", len(TINY_PNG))
-        from aiohttp import ClientConnectorError
-
-        with self.assertRaises(ClientConnectorError):
-            await preserve_legacy_uploads(self.store, self.settings.upload_dir, "http://127.0.0.1:1")
+        await self.store.create_attachment(corrupt_id, "alice", "corrupt.png", "image/png", len(TINY_PNG))
+        directory = Path(self.settings.upload_dir)
+        directory.mkdir(parents=True)
+        (directory / corrupt_id).write_bytes(b"\0" * len(TINY_PNG))
+        await preserve_legacy_uploads(self.store, directory)
         self.assertIsNone((await self.store.get_attachment(att_id, include_content=True))["content"])
+        self.assertIsNone((await self.store.get_attachment(corrupt_id, include_content=True))["content"])
 
 
 if __name__ == "__main__":

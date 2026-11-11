@@ -363,7 +363,7 @@ async def main():
     try:
         if settings.database_url:
             await store.user_exists("__readyz__")
-        await preserve_legacy_uploads(store, settings.upload_dir, os.getenv("RENDER_EXTERNAL_URL", ""))
+        await preserve_legacy_uploads(store, settings.upload_dir)
         await runner.setup()
         site = web.TCPSite(runner, args.web_host, args.web_port)
         await site.start()

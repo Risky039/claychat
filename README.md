@@ -99,7 +99,7 @@ ClayChat can store accounts, sessions, chat history, reactions, and read receipt
 
 If a password is hard to embed in a URI, set `CHAT_DATABASE_PASSWORD` in Render to the raw database password. This value overrides the password from `CHAT_DATABASE_URL`. Keep both settings on the server.
 
-An unset `CHAT_DATABASE_URL` keeps the SQLite setup for local use. A configured Postgres connection failure stops startup. Switching backends does not import old SQLite records. New uploads store their file contents and metadata together in the database. On startup, the gateway transfers available legacy uploads from local disk or the previous Render instance before becoming ready. Files that were already lost from temporary storage remain unavailable.
+An unset `CHAT_DATABASE_URL` keeps the SQLite setup for local use. A configured Postgres connection failure stops startup. Switching backends does not import old SQLite records. New uploads store their file contents and metadata together in the database. On startup, the gateway copies available legacy uploads from its local upload directory. Missing or unreadable legacy files do not prevent startup.
 
 ## Docker & Caddy HTTPS deployment
 
