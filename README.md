@@ -111,6 +111,10 @@ CHAT_DOMAIN=chat.example.com MODEL_API_KEY=your_key docker compose up -d --build
 
 Health and readiness probes are exposed at `/healthz` and `/readyz`.
 
+## Google Cloud (Compute Engine VM) deployment
+
+See [GCP_DEPLOY.md](GCP_DEPLOY.md) to provision or update a Compute Engine VM (`e2-micro` by default) running the Docker Compose stack with persistent SQLite/upload storage, web/WebSocket access (`8080`, plus optional Caddy HTTPS on `80`/`443`), and raw TCP access (`8765`).
+
 ## Azure VM deployment
 
 See [AZURE_DEPLOY.md](AZURE_DEPLOY.md) for the portal setup, PowerShell upload commands, VM service setup script, private Chunky key configuration, architecture diagram, and two-user verification.
