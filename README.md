@@ -115,6 +115,10 @@ Health and readiness probes are exposed at `/healthz` and `/readyz`.
 
 See [GCP_DEPLOY.md](GCP_DEPLOY.md) to provision or update a Compute Engine VM (`e2-micro` by default) running the Docker Compose stack with persistent SQLite/upload storage, web/WebSocket access (`8080`, plus optional Caddy HTTPS on `80`/`443`), and raw TCP access (`8765`).
 
+## AWS (EC2 / Lightsail) deployment
+
+See [AWS_DEPLOY.md](AWS_DEPLOY.md) for step-by-step instructions to deploy on an AWS Lightsail instance or an AWS EC2 `t2.micro`/`t3.micro` Ubuntu instance with inbound ports `8080` (web/WebSocket) and `8765` (raw TCP).
+
 ## Azure VM deployment
 
 See [AZURE_DEPLOY.md](AZURE_DEPLOY.md) for the portal setup, PowerShell upload commands, VM service setup script, private Chunky key configuration, architecture diagram, and two-user verification.
