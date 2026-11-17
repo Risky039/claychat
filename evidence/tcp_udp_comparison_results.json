@@ -1,0 +1,35 @@
+{
+  "tcp_baseline": {
+    "protocol": "TCP",
+    "drop_rate_target": 0.0,
+    "sent": 100,
+    "received": 100,
+    "loss_pct": 0.0,
+    "inversions": 0,
+    "lat_min_ms": 0.153,
+    "lat_avg_ms": 0.308,
+    "lat_max_ms": 1.375
+  },
+  "udp_baseline": {
+    "protocol": "UDP",
+    "drop_rate_target": 0.0,
+    "sent": 100,
+    "received": 100,
+    "loss_pct": 0.0,
+    "inversions": 0,
+    "lat_min_ms": 0.2,
+    "lat_avg_ms": 0.378,
+    "lat_max_ms": 0.953
+  },
+  "udp_controlled_loss_15pct": {
+    "protocol": "UDP",
+    "drop_rate_target": 0.15,
+    "sent": 100,
+    "received": 84,
+    "loss_pct": 16.0,
+    "inversions": 0,
+    "lat_min_ms": 0.212,
+    "lat_avg_ms": 0.501,
+    "lat_max_ms": 1.281
+  }
+}

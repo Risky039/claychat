@@ -74,7 +74,8 @@ class StoreFileTest(unittest.IsolatedAsyncioTestCase):
     async def test_existing_attachment_metadata_survives_the_content_migration(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "chat.db"
-            with sqlite3.connect(path) as raw:
+            raw = sqlite3.connect(path)
+            try:
                 for version, migration in enumerate(MIGRATIONS[:3], start=1):
                     raw.executescript(migration)
                     raw.execute(f"PRAGMA user_version = {version}")
@@ -82,6 +83,9 @@ class StoreFileTest(unittest.IsolatedAsyncioTestCase):
                     "INSERT INTO attachments VALUES (?, ?, ?, ?, ?, ?)",
                     ("old", "alice", "old.txt", "text/plain", 3, "2026-11-10T00:00:00+00:00"),
                 )
+                raw.commit()
+            finally:
+                raw.close()
             store = Store(path)
             try:
                 existing = await store.get_attachment("old", include_content=True)
